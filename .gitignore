@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+backups/
+artifacts/
+*.log
+*.gcode
+*.gx
+*.3mf
+*.exe
+*.dll
+*.bin
+*.curaprofile

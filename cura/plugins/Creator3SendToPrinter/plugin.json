@@ -1,0 +1,7 @@
+{
+    "name": "Creator 3 - Send to printer",
+    "author": "Creator 3 personal integration",
+    "version": "1.0.0",
+    "description": "Send native postprocessed Cura G-code to a selected Flashforge Creator 3",
+    "api": 8
+}
