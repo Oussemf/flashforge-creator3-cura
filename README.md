@@ -25,24 +25,24 @@ All project-provided menus, settings, dialogs and notifications are in English. 
 
 ## Why this project exists
 
-The Creator 3 can still be a capable printer, but its usefulness depends heavily on the software driving it. FlashPrint worked with the machine, while its slicing controls were limiting for the owner's projects.
+The Creator 3 can still be a capable printer, but its usefulness depends heavily on the software driving it. FlashPrint worked with my machine, but its slicing controls were limiting for my projects.
 
-A personally tuned Cura profile gave the best results the owner had achieved so far. However, it only drove the **right extruder**, and printed models roughly **80 mm to the right** of their position in Cura. Moving every object to the far left before slicing was a workaround, not a solution.
+My personally tuned Cura profile gave me the best results I had achieved so far. However, it only drove the **right extruder**, and printed models roughly **80 mm to the right** of their position in Cura. Moving every object to the far left before slicing was my workaround, not a solution.
 
-Profiles found in different places online were tried, but none met this owner's combination of requirements: keep the established Cura quality, fix positioning, use the left nozzle, and make both IDEX modes work reliably. Changing the selected G-code flavor affected positioning and appeared to affect quality, but that observation alone was not proof of a causal quality difference.
+I tried profiles found in different places online, but none met my combination of requirements: keep my established Cura quality, fix positioning, use the left nozzle, and make both IDEX modes work reliably. Changing the selected G-code flavor affected positioning and appeared to affect quality, but that observation alone was not proof of a causal quality difference.
 
-This project therefore **started from the working personal profile**, rather than replacing it with another downloaded Creator 3 profile. Existing resources were useful clues, but a profile name or a short start-code snippet was not sufficient to establish compatibility with this printer and its firmware.
+I therefore **started from my working personal profile**, rather than replacing it with another downloaded Creator 3 profile. Existing resources were useful clues, but a profile name or a short start-code snippet was not sufficient to establish compatibility with my printer and its firmware.
 
-The objective grew into a complete workflow:
+My objective grew into a complete workflow:
 
-1. Preserve Cura slicing and the owner's quality choices.
+1. Preserve Cura slicing and my quality choices.
 2. Correct the coordinate convention instead of applying an arbitrary offset.
 3. Support either physical extruder.
 4. Reproduce the printer's native mirror/duplicate initialization.
 5. Retain raft and generated supports.
 6. Upload the actual post-processed slice directly from Cura, with a safe filename and a separate start action.
 
-This is a report of one machine's investigation, **not a claim that every community profile is broken**.
+This is the story of my investigation on one machine, **not a claim that every community profile is broken**.
 
 ## What works, and what does not
 
@@ -68,10 +68,10 @@ The current distribution targets **Windows and Cura 5.12 / plugin API 8**. Other
 
 ### Evidence level
 
-- The owner physically confirmed centered right and left printing, then duplicate and mirror printing on **firmware 1.3.9 / controller 4.1.7**.
-- Real Cura exports of a large two-model project with raft and tree supports were checked across **206 layers**; Cura model, raft and support movements were preserved.
-- The owner subsequently reported that the Send to printer integration worked, and supplied a live screenshot showing both nozzle temperatures, bed temperature and progress during printing.
-- The English distribution is tested separately from that original installation. Network upload and the explicit start sequence are exercised against a **local simulator**, not by remotely starting an owner's printer.
+- I physically confirmed centered right and left printing, then duplicate and mirror printing on **firmware 1.3.9 / controller 4.1.7**.
+- Real Cura exports of my large two-model project with raft and tree supports were checked across **206 layers**; Cura model, raft and support movements were preserved.
+- I subsequently confirmed that the Send to printer integration worked, with a live screenshot showing both nozzle temperatures, bed temperature and progress during printing.
+- The English distribution is tested separately from my original installation. Network upload and the explicit start sequence are exercised against a **local simulator**, without remotely starting my physical printer.
 - These results do not establish compatibility with every machine, material or future firmware.
 
 ## Requirements
@@ -87,7 +87,7 @@ The current distribution targets **Windows and Cura 5.12 / plugin API 8**. Other
   Single-extruder export does not need this engine. The engine path is currently fixed; a different installation location requires an intentional source adjustment.
 - For network features: reachable printer on a trusted local IPv4 network.
 
-**FlashPrint, its engine and firmware are not included.** Install FlashPrint independently from the vendor. No firmware upgrade was needed for the successful reference machine.
+**FlashPrint, its engine and firmware are not included.** Install FlashPrint independently from the vendor. I did not need a firmware upgrade for my machine.
 
 ## Installation and rollback
 
@@ -158,7 +158,7 @@ In Cura, use **Add printer > Add a non-networked printer**, expand **Flashforge*
 
 **Creator 3 - Cura Native Integration**
 
-Do not select another similarly named Creator 3 profile for this workflow. The reference installation archived competing printer instances to avoid mistakes; the public installer does **not** delete anybody else's printers.
+Do not select another similarly named Creator 3 profile for this workflow. In my installation, competing printer instances were archived to avoid mistakes; the public installer does **not** delete anybody else's printers.
 
 An existing installation already using the same `creator3_personal` definition can continue to use its existing instance. Renaming its visible instance is optional.
 
@@ -197,7 +197,7 @@ The Cura preview shows the original Cura paths. Native calibration paths are add
 
 This integration is about machine compatibility, not a universal material preset. It does not replace your existing quality settings or ship a personal Cura configuration.
 
-For context, the later reference project used 0.2 mm layers, 0.24 mm initial layers, 215 C nozzles, a 58 C bed, 55 mm/s print speed, 80 mm/s travel, 20% gyroid infill, tree supports and a raft. These are **examples, not recommendations for every material or model**. Inspect wall, retraction, cooling, support and adhesion settings before printing.
+For context, my later test project used 0.2 mm layers, 0.24 mm initial layers, 215 C nozzles, a 58 C bed, 55 mm/s print speed, 80 mm/s travel, 20% gyroid infill, tree supports and a raft. These are **examples, not recommendations for every material or model**. Inspect wall, retraction, cooling, support and adhesion settings before printing.
 
 ## Single-extruder printing
 
@@ -300,17 +300,17 @@ The original protocol is not encrypted or intended for the Internet. Use a trust
 
 ## How the problem was solved
 
-The investigation was iterative, but it did not rely on blindly trying more start-code snippets.
+My investigation was iterative, but I did not want to rely on blindly trying more start-code snippets.
 
-It combined owner-operated physical tests with AI-assisted code analysis, implementation and automated verification. Python comparison scripts, local binary inspection and Ghidra decompilation were used where public documentation was insufficient. Conclusions about physical behavior were accepted only after the owner tested the corresponding files; simulator success alone was not treated as printer compatibility.
+I combined physical tests on my printer with AI-assisted code analysis, implementation and automated verification. Python comparison scripts, local binary inspection and Ghidra decompilation were used where public documentation was insufficient. I accepted conclusions about physical behavior only after testing the corresponding files; simulator success alone was not treated as printer compatibility.
 
 ### 1. Freeze the starting point
 
-A complete Cura backup was made, verified file by file with SHA-256, and its restoration was tested. The personally tuned profile was preserved as the baseline. Each substantial integration change received another verified configuration backup.
+Before changing my installation, I required a complete Cura backup, verified file by file with SHA-256, and a tested restoration. My personally tuned profile was preserved as the baseline. Each substantial integration change received another verified configuration backup.
 
 ### 2. Compare controlled outputs
 
-Small, centered test geometries were sliced in FlashPrint in single, mirror and duplicate modes. A five-layer L-shaped witness made differences easy to inspect. Within each comparison, geometry and slicing settings were held constant while the print mode changed.
+I prepared small, centered test geometries sliced in FlashPrint in single, mirror and duplicate modes. A five-layer L-shaped witness made differences easy to inspect. Within each comparison, I kept geometry and slicing settings constant while changing the print mode.
 
 The comparison separated startup commands, tool selection, coordinate conventions, model movements and special calibration records. Cura exports were compared against that evidence rather than against unrelated downloaded profiles.
 
@@ -328,13 +328,13 @@ Positioning was fixed through the centered coordinate convention and native firm
 
 ### 4. Explain the failed IDEX startup
 
-The first IDEX attempt was accepted, calibrated and heated, yet the left head remained parked and tried to move farther left when the right head moved left. Heating both nozzles and selecting a mode was clearly not enough.
+My first IDEX attempt was accepted, calibrated and heated, yet the left head remained parked and tried to move farther left when the right head moved left. Heating both nozzles and selecting a mode was clearly not enough.
 
-When documentation and output comparison could not explain the missing initialization, locally installed FlashPrint/its slicing engine and supplied firmware were examined with binary analysis and decompilation tools. The purpose was to understand observable protocol behavior, not to redistribute proprietary software.
+When documentation and output comparison could not explain the missing initialization, I took the investigation further: my locally installed FlashPrint/its slicing engine and firmware files I supplied were examined with binary analysis and decompilation tools. The purpose was to understand observable protocol behavior, not to redistribute proprietary software.
 
 This identified four ordered native **calPad** blocks: A, B, SA and SB. Records beginning `;:G1` are firmware-consumed data, **not harmless comments**.
 
-A targeted test restored those native calibration records without replacing Cura's model paths. The owner then physically confirmed **duplicate**, followed by **mirror**, on the existing firmware.
+A targeted test restored those native calibration records without replacing Cura's model paths. I then physically confirmed **duplicate**, followed by **mirror**, on my existing firmware.
 
 ### 5. Generate calibration for the actual job
 
@@ -360,7 +360,7 @@ Filename budgets, discovery reply fields, CRC packets, acknowledgements and cont
 
 Older transfer versions use 4096-byte payload packets with a big-endian header and CRC32 acknowledgements. A control version of **2.0 or newer** selects the native raw-stream transfer. Sending the old packet format regardless of the negotiated version would not be correct.
 
-Early read-only queries timed out while the real printer was busy. The implementation exposed unavailable status rather than inventing zero temperatures or a Ready state. Later, live status was confirmed by the owner's screenshot.
+Early read-only queries timed out while my printer was busy. The implementation exposed unavailable status rather than inventing zero temperatures or a Ready state. I later confirmed live status with a screenshot from my printer.
 
 ## Validation and troubleshooting
 
