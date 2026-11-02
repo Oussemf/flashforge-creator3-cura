@@ -4,8 +4,6 @@
 
 A community integration for the **original Flashforge Creator 3**, combining a two-extruder machine definition, a fail-closed native G-code post-processor, and a local-network **Send to printer** extension.
 
-All project-provided menus, settings, dialogs and notifications are in English. Cura's own interface language is controlled separately in Cura preferences.
-
 > **Read before printing:** this is not a generic Marlin profile and not an official Flashforge release. The machine definition and post-processing script must be used together. Start with a small, supervised single-extruder test. Do not print a blocked export or bypass calibration checks.
 
 ## Contents
@@ -25,7 +23,9 @@ All project-provided menus, settings, dialogs and notifications are in English. 
 
 ## Why this project exists
 
-The Creator 3 can still be a capable printer, but its usefulness depends heavily on the software driving it. FlashPrint worked with my machine, but its slicing controls were limiting for my projects.
+The Creator 3 can still be a capable printer, but its usefulness depends heavily on the software driving it. FlashPrint worked randomly with my machine and its slicing controls were limiting for my projects.
+
+I got this printer for quite cheap and the hardware is rock solid and serviceable as needed. The biggest issue was the lack of software support but I was at least able to print with right extruder on Cura.
 
 My personally tuned Cura profile gave me the best results I had achieved so far. However, it only drove the **right extruder**, and printed models roughly **80 mm to the right** of their position in Cura. Moving every object to the far left before slicing was my workaround, not a solution.
 
@@ -65,14 +65,6 @@ This is the story of my investigation on one machine, **not a claim that every c
 | Pause/cancel a physical print from this extension | No | "Cancel operation" cancels discovery/upload, not the print |
 
 The current distribution targets **Windows and Cura 5.12 / plugin API 8**. Other Cura versions, operating systems, Creator 3 variants and firmware combinations are not certified.
-
-### Evidence level
-
-- I physically confirmed centered right and left printing, then duplicate and mirror printing on **firmware 1.3.9 / controller 4.1.7**.
-- Real Cura exports of my large two-model project with raft and tree supports were checked across **206 layers**; Cura model, raft and support movements were preserved.
-- I subsequently confirmed that the Send to printer integration worked, with a live screenshot showing both nozzle temperatures, bed temperature and progress during printing.
-- The English distribution is tested separately from my original installation. Network upload and the explicit start sequence are exercised against a **local simulator**, without remotely starting my physical printer.
-- These results do not establish compatibility with every machine, material or future firmware.
 
 ## Requirements
 
@@ -260,8 +252,6 @@ Open **Extensions > Creator 3 - Send to printer > Send sliced build plate...**, 
 
 ![English Send to printer window](docs/send-to-printer.png)
 
-*Real Cura window connected to a local simulator. No personal printer name or LAN address is shown.*
-
 1. Click **Discover**, or enter a friendly name and **IPv4 address**, then **Add**.
 2. Select a target printer. The selection and target list persist in local Cura preferences.
 3. Check the reported state, **L/R nozzle temperatures**, bed temperature and progress.
@@ -330,7 +320,7 @@ Positioning was fixed through the centered coordinate convention and native firm
 
 My first IDEX attempt was accepted, calibrated and heated, yet the left head remained parked and tried to move farther left when the right head moved left. Heating both nozzles and selecting a mode was clearly not enough.
 
-When documentation and output comparison could not explain the missing initialization, I took the investigation further: my locally installed FlashPrint/its slicing engine and firmware files I supplied were examined with binary analysis and decompilation tools. The purpose was to understand observable protocol behavior, not to redistribute proprietary software.
+When documentation and output comparison could not explain the missing initialization, I took the investigation further: my locally installed FlashPrint/its slicing engine and firmware files were examined with binary analysis and decompilation tools. The purpose was to understand observable protocol behavior, not to redistribute proprietary software.
 
 This identified four ordered native **calPad** blocks: A, B, SA and SB. Records beginning `;:G1` are firmware-consumed data, **not harmless comments**.
 
@@ -413,7 +403,7 @@ install.ps1              Verified pre-install backup and installation
 restore.ps1              Journal-based integration rollback
 ```
 
-This is an independent community project. It is not affiliated with or endorsed by Flashforge or UltiMaker. Cura/FlashPrint/firmware and their names remain subject to their respective owners' licenses and trademarks.
+This is an independent personal hobby-made project because I found this printer very solid and serviceable and its biggest weakness was the lack of software support and how Flashforge abandoned it without releasing internal flashforge Marlin flavor details. It is not affiliated with or endorsed by Flashforge or UltiMaker. Cura/FlashPrint/firmware and their names remain subject to their respective owners' licenses and trademarks.
 
 Public protocol resources consulted as independent behavior references:
 
@@ -425,7 +415,5 @@ Public protocol resources consulted as independent behavior references:
 Those projects are not evidence that all Creator 3 firmware behaves identically. Their source code is not vendored here; their licenses are not replaced by this project's license.
 
 The machine definition references dependencies already bundled with Cura (`flashforge_dreamer_nx`, `flashforge_base`, `fdmextruder`); it does not bundle those upstream definitions.
-
-The repository includes only original integration code, its English adaptation, tests and documentation. It excludes personal configuration/backups, printer identities, proprietary models, sliced jobs, FlashPrint binaries, firmware and decompiled source listings.
 
 Original project code and documentation are licensed under the [MIT License](LICENSE). Third-party dependencies are not relicensed. The software is provided without warranty; you remain responsible for calibration, safe operation and supervising initial tests.
