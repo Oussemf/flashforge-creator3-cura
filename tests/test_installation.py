@@ -1,3 +1,4 @@
+import ctypes
 import json
 import subprocess
 import sys
@@ -117,5 +118,34 @@ class InstallationTests(unittest.TestCase):
                 )
                 result = self.invoke(wrapper)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((config / "original.cfg").read_bytes(), b"original\n")
+            self.assertFalse((config / "scripts" / "Creator3Native.py").exists())
+
+    def test_restore_accepts_short_backup_paths_but_rejects_escape(self):
+        with tempfile.TemporaryDirectory(prefix="creator3-long-backup-directory-") as directory:
+            base = Path(directory)
+            config, cache, backups = base / "config", base / "cache", base / "backups"
+            config.mkdir()
+            (config / "original.cfg").write_bytes(b"original\n")
+            result = self.invoke("install.ps1", "-ConfigPath", config, "-CachePath", cache, "-BackupRoot", backups)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            backup = next(backups.iterdir())
+            buffer = ctypes.create_unicode_buffer(32768)
+            length = ctypes.windll.kernel32.GetShortPathNameW(str(backup), buffer, len(buffer))
+            self.assertTrue(0 < length < len(buffer), "Cannot resolve the backup's short path")
+            if buffer.value == str(backup):
+                self.skipTest("8.3 short names are disabled on this volume")
+            manifest_path = backup / "sha256.json"
+            original_manifest = manifest_path.read_bytes()
+            manifest = json.loads(original_manifest.decode("utf-8-sig"))
+            manifest[0]["path"] = "..\\..\\outside.cfg"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            result = self.invoke("restore.ps1", "-BackupPath", buffer.value)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Unsafe path in backup manifest", result.stderr)
+            self.assertTrue((config / "scripts" / "Creator3Native.py").exists())
+            manifest_path.write_bytes(original_manifest)
+            result = self.invoke("restore.ps1", "-BackupPath", buffer.value)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((config / "original.cfg").read_bytes(), b"original\n")
             self.assertFalse((config / "scripts" / "Creator3Native.py").exists())
