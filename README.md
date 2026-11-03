@@ -15,6 +15,7 @@ A community integration for the **original Flashforge Creator 3**, combining a t
 - [First print and machine settings](#first-print-and-machine-settings)
 - [Single-extruder printing](#single-extruder-printing)
 - [IDEX mirror and duplicate](#idex-mirror-and-duplicate)
+- [Alternating heads: experimental dual-material printing](#alternating-heads-experimental-dual-material-printing)
 - [Raft and supports](#raft-and-supports)
 - [Send to printer](#send-to-printer)
 - [How the problem was solved](#how-the-problem-was-solved)
@@ -50,7 +51,7 @@ This is the story of my investigation on one machine, **not a claim that every c
 |---|---|---|
 | Single right nozzle | Yes | Cura Extruder 1 = firmware T0 |
 | Single left nozzle | Yes | Cura Extruder 2 = firmware T1 |
-| Two nozzles configured in Cura | Yes | Select either one for a single-nozzle job |
+| Two nozzles configured in Cura | Yes | Use Single mode for either nozzle, or explicitly opt into experimental alternating heads |
 | IDEX Duplicate | Yes | Both nozzles print the same arrangement simultaneously |
 | IDEX Mirror | Yes | The second nozzle prints the mirrored arrangement |
 | Raft, skirt, brim | Yes | In IDEX, assign them to right/T0 |
@@ -58,7 +59,7 @@ This is the story of my investigation on one machine, **not a claim that every c
 | Multiple ordinary models on one plate | Yes | Print all at once; one pilot tool for the entire arrangement |
 | Sequential, one-at-a-time IDEX printing | No | Explicitly rejected |
 | Modifier meshes or custom support meshes in IDEX | No | Explicitly rejected |
-| Alternating nozzles / dual-material / dual-color | No | Two configured extruders do **not** mean tool-changing support |
+| Alternating nozzles / dual-material / dual-color | Experimental | Real Cura exports and loopback transfer verified; physical printing not yet validated |
 | Native IDEX with other nozzle/filament diameters | Not validated | Currently restricted to 0.4 mm and 1.75 mm |
 | Printer discovery, live status and upload | Yes | Local IPv4 network; no cloud account required by this extension |
 | Optional start after upload | Yes | Separate confirmation; never starts automatically after sending |
@@ -206,7 +207,43 @@ Follow the same steps, but assign everything to **Left (T1)** / Cura Extruder 2.
 
 The script derives the selected nozzle from Cura's actual toolpath. There is no separate left/right mode switch in the post-processor.
 
-**Do not mix extruders on one plate**, even if you are printing two separate objects. Alternating tools and dual-material supports are rejected. Two materials loaded in the printer can be used for separate single-nozzle jobs; this is not a dual-material job.
+**Do not mix extruders on one plate in Single mode**, even if you are printing two separate objects. That mode intentionally rejects tool changes. To alternate nozzles, explicitly select the experimental mode below.
+
+## Alternating heads: experimental dual-material printing
+
+This is **not Mirror or Duplicate**. Cura assigns paths to each nozzle and alternates between them. The other nozzle is parked while the active nozzle prints. It is also **not One at a Time**: neither head completes a whole object before the other begins.
+
+**Status:** I compared two controlled FlashPrint exports with the nozzle assignments swapped, then examined the native file reader to understand parking, extrusion resets and height compensation. Actual Cura exports with both assignments, plus a raft job, passed the native post-processing and Send to printer workflow against a loopback simulator. This is software validation, **not a successful physical dual-material print**. The examined firmware/controller binaries were newer than my installed versions; equivalence on my printer still needs a supervised test.
+
+### Setup and first test
+
+1. Verify centered single-nozzle printing with **both** heads, level the bed, and perform the printer's normal dual-nozzle XYZ calibration.
+2. Start with two small, separated models, one assigned to **Extruder 1 (right/T0)** and the other to **Extruder 2 (left/T1)**. Use the same PLA in two colors before trying different materials.
+3. Keep **Print Sequence = All at Once** and enable both extruders.
+4. Enable a **Prime Tower**. Check its location, size and priming volume in Preview. The tower and all travels must fit within the ordinary 300 x 250 mm centered plate, not just the models.
+5. Enable **Nozzle Switch Retraction** for both heads. For my initial PLA tests, I used **1.3 mm** at **30 mm/s**, matching the native reference's retraction length. Do not blindly keep a generic printer's much longer switch-retraction default. Start without additional Cura Z hops; the firmware already lifts and parks during head changes.
+6. Set each nozzle's initial/printing/standby temperatures for its own material. There is one shared bed: choose a bed temperature compatible with both materials.
+7. Open **Extensions > Post Processing > Modify G-Code**:
+   - Select **Dual material / alternating heads (experimental)**.
+   - Confirm **Experimental dual-head XYZ calibration verified** only after completing the printer calibration.
+   - Close the post-processing window, then slice again.
+8. Inspect Preview for both nozzle paths, a prime tower and retraction. Export or use **Send to printer** as usual. Sending does not start the print; start the first test locally and supervise it.
+9. Check centering, nozzle clearance, parking, first-layer adhesion and extrusion after every switch. Stop using the printer's controls if a head scrapes, fails to park, or moves unexpectedly. Do not compensate with guessed offsets.
+
+Models, normal Cura supports/interfaces and adhesion paths retain their assigned tool. Both tools must actually extrude; for a one-tool job, use Single mode. A raft export has been checked through real Cura, but mixed-material supports and interface adhesion still require physical validation.
+
+### Native conversion and limits
+
+- Startup declares **`M118 ... T0 T1` without `D1/D2`** and heats/waits for both nozzles independently.
+- Cura `T0/T1` becomes native **`M108 T0/T1`**. The printer's file reader performs the head-change parking and uses its stored calibration; the exporter adds no guessed park positions or nozzle-height offsets.
+- Absolute extrusion is tracked per nozzle. Cura's **`G92 E...` resets after every switch are preserved**, including retraction and prime-tower extrusion. A switch without the required reset or fresh XY positioning is blocked.
+- Native temperature waits use `M6`; Marlin `M109 S...` is never mistaken for the native synchronous IDEX command.
+- Z changes become **standalone `G1 Z...` commands**, because that is where the native file reader applies nozzle-height compensation. Z speed is capped at **7 mm/s**, and the following XY/E feedrate is restored. Logical Z heights and extrusion endpoints are retained.
+- Fan commands follow the active head; explicitly addressed fan settings are restored when that head is selected again.
+- Alternating mode does **not** generate mirror/duplicate calPads. Send to printer requires a distinct experimental export stamp and rejects mixed synchronous/alternating initialization.
+- One at a Time, spiralize, coordinated Z/extrusion moves, missing prime towers and disabled switch retraction are rejected. Full-bed bounds remain enforced.
+
+Keep the default **Single extruder** mode for known-good jobs until the alternating-head test has passed on your own printer.
 
 ## IDEX mirror and duplicate
 
@@ -264,6 +301,8 @@ Open **Extensions > Creator 3 - Send to printer > Send sliced build plate...**, 
 ![Separate print-start confirmation](docs/start-confirmation.png)
 
 Status refreshes every 10 seconds while the window is open. Monitoring does not acquire printer control, and missing values remain `--`. A printer reporting `BUILDING_FROM_SD` is displayed as **Printing from storage**, not as ready to receive a new job.
+
+The small **Camera preview** frame follows the selected printer and refreshes a JPEG snapshot every two seconds using its local HTTP camera service on port **8080**. It preserves the image's aspect ratio and does not modify focus, lighting, or printer settings. Disable the checkbox to stop viewing; closing the window also cancels camera requests. Camera failures are shown inside the frame and do not prevent uploading. Enable the camera on the printer if its service is off. This is a periodically refreshed preview, not the full-rate MJPEG stream; no images are saved to disk. Keep the camera port on a trusted LAN, never forwarded to the Internet.
 
 ### Filename limits
 
@@ -364,7 +403,7 @@ python -m unittest discover -s tests -v
 
 No third-party packages are needed for these tests. Cura itself supplies Qt and Uranium when the extension runs.
 
-The suite covers native conversion, unsafe-input rejection, synthetic calPad parsing, raft/support bounds, network fragmentation/CRC/version negotiation, cancellation, separate start, and Windows installation/restore.
+The suite covers native conversion, unsafe-input rejection, synthetic calPad parsing, raft/support bounds, experimental alternating-head E resets/temperature/fans/Z handling, network fragmentation/CRC/version negotiation, cancellation, separate start, and Windows installation/restore. Camera tests additionally cover JPEG decoding, periodic refresh, timeout, errors/recovery and cancelled requests using a loopback HTTP server. They require PyQt6 and an available local port 8080; they are skipped when Qt is absent. I also verified the preview, checkbox, target switching and close/reopen behavior in isolated Cura instances, using both the English and French interfaces.
 
 An optional local-engine test runs when FlashPrint is installed at the expected path. It is skipped otherwise. Windows installer tests are skipped outside Windows. The CI workflow is configured to exercise the portable suite on Windows/Linux and Python 3.11/3.13; it does not download proprietary binaries or control a printer.
 
@@ -385,7 +424,7 @@ Synthetic parser fixtures are **not printable calibration examples**. This repos
 | Status unavailable or Send disabled | Check reachability/control contention and refresh. A printer that is printing or paused is intentionally not ready for sending. |
 | Start unavailable after upload | Wait for a fresh Ready status and the current status worker to finish. |
 | Transfer cancelled/failed | A partial file may remain; do not print it. Resolve the reported error before sending again. |
-| Temptation to assign support to the other nozzle | Dual-material/tool-changing jobs are unsupported, even in single mode. |
+| Support assigned to the other nozzle | Single/Mirror/Duplicate reject mixed tools. Use experimental alternating mode only after calibration; mixed-material interfaces still need physical validation. |
 
 When reporting an issue, include Cura version, printer/firmware/controller versions, nozzle size, selected mode and the error message. Redact IP addresses, names and personal file paths from logs/screenshots. Do not upload firmware dumps, backups, credentials or proprietary models.
 

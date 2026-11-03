@@ -66,6 +66,10 @@ def validate_gcode(path: Path) -> None:
     movement = False
     mode = None
     idex_stamp = False
+    dual_stamp = False
+    dual_header = False
+    dual_incompatible = False
+    selected_tools = set()
     markers = []
     with path.open("r", encoding="utf-8") as stream:
         for line in stream:
@@ -73,15 +77,25 @@ def validate_gcode(path: Path) -> None:
                 raise PrinterError("Cura export blocked: this file will not be uploaded")
             native = native or line.strip() == ";CREATOR3_NATIVE_V1"
             idex_stamp = idex_stamp or line.strip() == ";CREATOR3_IDEX_CALPAD_V2"
+            dual_stamp = dual_stamp or line.strip() == ";CREATOR3_DUAL_EXPERIMENTAL_V1"
+            if line.startswith("M118 "):
+                dual_header = bool(re.search(r"\bT0 T1\s*$", line))
+                dual_incompatible = dual_incompatible or bool(re.search(r"\bD[12]\b", line))
+            if re.fullmatch(r"M108 T[01]\s*", line):
+                selected_tools.add(int(line.strip()[-1]))
+            dual_incompatible = dual_incompatible or bool(re.match(r"^(?:T[01]\b|M109\b|M82\b)", line))
             if line.startswith(";mode:"):
                 mode = line.split(";", 2)[1].partition(":")[2]
             if line.startswith(";calPad "):
                 markers.append(line.strip())
             if re.match(r"^G1\b.*\bE[-+]?[0-9.]+", line):
                 movement = True
-    if not native or mode not in ("solo", "mirror", "duplicate") or not movement:
+    if not native or mode not in ("solo", "mirror", "duplicate", "dual") or not movement:
         raise PrinterError("Incomplete native Creator 3 G-code: check post-processing and slice again")
-    if mode != "solo":
+    if mode == "dual":
+        if not dual_stamp or not dual_header or selected_tools != {0, 1} or dual_incompatible or idex_stamp or markers:
+            raise PrinterError("Incomplete experimental alternating-head export: slice again in Cura")
+    elif mode != "solo":
         expected = [
             marker for block in ("A", "B", "SA", "SB")
             for marker in (f";calPad {block} start Z0.20", f";calPad {block} end")

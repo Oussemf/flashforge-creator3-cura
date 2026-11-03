@@ -17,6 +17,7 @@ spec.loader.exec_module(protocol)
 
 
 NATIVE = b";CREATOR3_NATIVE_V1\n;mode:solo; source:Marlin\nG1 X0 Y0 Z0.2 E1\n;C3_END\nM18\n"
+DUAL = b";CREATOR3_NATIVE_V1\n;mode:dual; source:Marlin\n;CREATOR3_DUAL_EXPERIMENTAL_V1\nM118 X5 Y5 Z0.2 T0 T1\nM108 T0\nG1 X0 Y0 E1\nM108 T1\nG92 E0\nG1 X1 Y1 E1\n;C3_END\nM18\n"
 
 
 class FakePrinter:
@@ -128,6 +129,34 @@ class FakePrinter:
 
 
 class SendTests(unittest.TestCase):
+    def test_dual_requires_stamp_native_selection_and_no_sync_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "dual.gcode"
+            path.write_bytes(DUAL)
+            protocol.validate_gcode(path)
+            for invalid in (
+                DUAL.replace(b";CREATOR3_DUAL_EXPERIMENTAL_V1\n", b""),
+                DUAL.replace(b"T0 T1\n", b"T0 T1 D1\n"),
+                DUAL.replace(b"M108 T1", b"T1"),
+                DUAL.replace(b"M108 T1", b"M108 T0"),
+                DUAL + b"M109 T1\n",
+                DUAL + b";CREATOR3_IDEX_CALPAD_V2\n",
+                DUAL + b";calPad A start Z0.20\n",
+            ):
+                with self.subTest(invalid=invalid):
+                    path.write_bytes(invalid)
+                    with self.assertRaises(protocol.PrinterError):
+                        protocol.validate_gcode(path)
+
+    def test_dual_upload_preserves_bytes_and_never_starts_automatically(self):
+        with tempfile.TemporaryDirectory() as directory, FakePrinter(fragment=True) as fake:
+            path = Path(directory) / "dual.gcode"
+            path.write_bytes(DUAL)
+            with protocol.Client("127.0.0.1", threading.Event(), fake.port) as client:
+                client.upload(path, protocol.transfer_name("alternating heads"), lambda _: None)
+            self.assertEqual(fake.payload, DUAL)
+            self.assertFalse(any(command.startswith(("~M23", "~M24")) for command in fake.commands))
+
     def test_short_ascii_unique_name_including_remote_path(self):
         for title in ("very long café display stand model.stl", "你好", r"C:\test\stand.stl", "../../M23 \r\nM24.gcode"):
             a, b = protocol.transfer_name(title), protocol.transfer_name(title)

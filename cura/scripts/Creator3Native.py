@@ -14,6 +14,7 @@ START = ";C3_BODY"
 END = ";C3_END"
 STAMP = ";CREATOR3_NATIVE_V1"
 IDEX_STAMP = ";CREATOR3_IDEX_CALPAD_V2"
+DUAL_STAMP = ";CREATOR3_DUAL_EXPERIMENTAL_V1"
 ENGINE = Path(r"C:\Program Files\FlashForge\FlashPrint 5\engine\ffslicer.exe")
 NUMBER = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 PARAMETER = re.compile(rf"([A-Z])({NUMBER})(?=\s|$)")
@@ -29,6 +30,7 @@ class PrintConfig:
     height: float = 200
     idex_calibrated: bool = False
     calpads: tuple[str, ...] = ()
+    dual_calibrated: bool = False
 
 
 def idex_half_width(config: PrintConfig) -> float:
@@ -281,16 +283,21 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
             raise ValueError("Mode changed: slice again before exporting.")
         if existing_idex:
             extract_calpads(text, config)
+        if config.mode == "dual" and (DUAL_STAMP not in text or not config.dual_calibrated):
+            raise ValueError("Experimental alternating-head printing requires calibration confirmation.")
         return data
-    if config.mode not in ("solo", "mirror", "duplicate"):
+    if config.mode not in ("solo", "mirror", "duplicate", "dual"):
         raise ValueError("Unknown print mode")
+    dual = config.mode == "dual"
+    if dual and not config.dual_calibrated:
+        raise ValueError("Experimental alternating-head printing: verify both nozzles and the printer's XYZ calibration first.")
     if text.splitlines().count(START) != 1 or text.splitlines().count(END) != 1:
         raise ValueError("Use the Creator 3 integration profile and its start/end G-code.")
     prefix, rest = text.split(START + "\n", 1)
     body, _ = rest.split(END + "\n", 1)
-    if config.mode != "solo" and not config.idex_calibrated:
+    if config.mode in ("mirror", "duplicate") and not config.idex_calibrated:
         raise ValueError("First verify single-extruder centering and calibrate both nozzles in FlashPrint.")
-    if config.mode != "solo":
+    if config.mode in ("mirror", "duplicate"):
         if not config.calpads:
             raise ValueError("Native calPads missing: automatic generation is required for IDEX.")
         extract_calpads("\n".join(config.calpads), config)
@@ -309,6 +316,8 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
     initial = active
     used = set()
     extrusion = 0.0
+    tool_extrusion = [0.0, 0.0]
+    reset_required = False
     known_xy = set()
     extent = {"X": 0.0, "Y": 0.0, "Z": 0.0}
     allowed = {
@@ -323,16 +332,29 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
         if op and op not in allowed:
             raise ValueError(f"Command not validated for this profile: {op}")
         if op in ("T0", "T1"):
+            if params:
+                raise ValueError("Tool selection must not include additional parameters")
+            if dual and active != int(op[1:]):
+                known_xy.clear()
+                reset_required = True
             active = int(op[1:])
         elif op == "M108":
             if set(params) != {"T"}:
                 raise ValueError("M108 must only select T0 or T1")
-            active = tool_number(params["T"])
+            target = tool_number(params["T"])
+            if dual and active != target:
+                known_xy.clear()
+                reset_required = True
+            active = target
         elif op == "G92":
             if set(params) != {"E"}:
                 raise ValueError("XYZ origin changes are not allowed")
             extrusion = params["E"]
+            tool_extrusion[active] = extrusion
+            reset_required = False
         elif op in ("G0", "G1"):
+            if dual and "Z" in params and "E" in params:
+                raise ValueError("Alternating-head mode does not support coordinated Z/extrusion moves.")
             for axis in ("X", "Y"):
                 if axis in params:
                     known_xy.add(axis)
@@ -342,22 +364,32 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
                     raise ValueError("Movement below the build plate")
                 extent["Z"] = max(extent["Z"], params["Z"])
             if "E" in params:
+                if dual and reset_required:
+                    raise ValueError("Cura must reset absolute E with G92 after every tool change.")
+                if dual:
+                    extrusion = tool_extrusion[active]
                 if params["E"] > extrusion + 0.00001:
                     if known_xy != {"X", "Y"}:
                         raise ValueError("Extrusion before XY positioning")
                     used.add(active)
                 extrusion = params["E"]
+                tool_extrusion[active] = extrusion
         parsed.append((line, op, params))
-    if len(used) != 1 or initial not in used:
-        raise ValueError("Use one nozzle for the entire plate, including raft and supports. Dual-material printing is not supported.")
-    selected = used.pop()
-    if config.mode != "solo" and selected != 0:
+    if dual:
+        if used != {0, 1}:
+            raise ValueError("Alternating-head mode requires extrusion from both nozzles. Use Single extruder otherwise.")
+        selected = initial
+    elif len(used) != 1 or initial not in used:
+        raise ValueError("Use one nozzle for the entire plate in Single/Mirror/Duplicate mode. Select experimental alternating heads for dual-material jobs.")
+    else:
+        selected = used.pop()
+    if config.mode in ("mirror", "duplicate") and selected != 0:
         raise ValueError("Mirror/duplicate: assign all models to Extruder 1 (right/T0).")
-    if any(op in ("T0", "T1", "M108") and (
+    if not dual and any(op in ("T0", "T1", "M108") and (
         int(op[1:]) if op.startswith("T") else tool_number(params["T"])
     ) != selected for _, op, params in parsed):
         raise ValueError("Tool changes during printing are not supported.")
-    half_width = config.width / 2 if config.mode == "solo" else idex_half_width(config)
+    half_width = config.width / 2 if config.mode in ("solo", "dual") else idex_half_width(config)
     if extent["X"] > half_width + 0.001 or extent["Y"] > config.depth / 2 + 0.001:
         raise ValueError(
             f"Path outside the print area: X +/-{extent['X']:.2f}, Y +/-{extent['Y']:.2f} mm. "
@@ -367,10 +399,13 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
         raise ValueError("Path height out of range")
     bed = temperature(config.bed, 120)
     heat = temperature(config.nozzle[selected], 300)
+    dual_heat = [temperature(value, 300) for value in config.nozzle] if dual else []
+    if dual and any(value == 0 for value in dual_heat):
+        raise ValueError("Both nozzle temperatures must be nonzero in alternating-head mode.")
     if heat == 0:
         raise ValueError("Nozzle temperature must not be zero")
     mode_number = {"mirror": 1, "duplicate": 2}.get(config.mode)
-    tools = [selected] if mode_number is None else [0, 1]
+    tools = [0, 1] if dual or mode_number is not None else [selected]
     bounds = " ".join(f"{axis}{math.ceil(value * 100) / 100:.2f}" for axis, value in extent.items())
     header = []
     for line in prefix.splitlines():
@@ -379,11 +414,13 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
         if line.startswith(";"):
             header.append(line)
     startup = [STAMP, f";mode:{config.mode}; source:Marlin; coordinates and extrusion unchanged"]
+    if dual:
+        startup.append(DUAL_STAMP)
     startup.append(f"M118 {bounds} " + " ".join(f"T{tool}" for tool in tools) + (
         f" D{mode_number}" if mode_number is not None else ""
     ))
     startup.append(f"M140 S{bed} T0")
-    startup.extend(f"M104 S{heat if tool in tools else 0} T{tool}" for tool in (0, 1))
+    startup.extend(f"M104 S{dual_heat[tool] if dual else heat if tool in tools else 0} T{tool}" for tool in (0, 1))
     startup.extend(["M107", "G90", "G1 Z50.000 F420", "M7 T0"])
     startup.extend(f"M6 T{tool}" for tool in tools)
     startup.append("M651 S255")
@@ -391,8 +428,20 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
         startup.extend([IDEX_STAMP, *config.calpads])
     startup.extend([f"M109 T{mode_number}" if mode_number else f"M108 T{selected}", "G92 E0"])
     output = []
+    active = selected
+    fan_speeds = [0, 0]
+    source_feed = None
+    source_feed_text = None
+    native_feed = None
     for line, op, params in parsed:
-        if op in ("T0", "T1", "M108", "M82"):
+        if op in ("T0", "T1", "M108"):
+            target = int(op[1:]) if op.startswith("T") else tool_number(params["T"])
+            if dual and target != active:
+                active = target
+                output.append(f"M108 T{active}")
+                output.append(f"M106 S{fan_speeds[active]}" if fan_speeds[active] else "M107")
+            continue
+        if op == "M82":
             continue
         if op == "M105":
             if params:
@@ -401,13 +450,14 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
         if op in ("M104", "M109"):
             if "S" not in params or set(params) - {"S", "T"}:
                 raise ValueError("Only M104/M109 S<temperature> T<tool> are supported")
-            target = tool_number(params.get("T", selected))
-            if target != selected:
+            target = tool_number(params.get("T", active))
+            if not dual and target != selected:
                 continue
             heat = temperature(params["S"], 300)
-            output.extend(f"M104 S{heat} T{tool}" for tool in tools)
+            targets = [target] if dual else tools
+            output.extend(f"M104 S{heat} T{tool}" for tool in targets)
             if op == "M109":
-                output.extend(f"M6 T{tool}" for tool in tools)
+                output.extend(f"M6 T{tool}" for tool in targets)
         elif op in ("M140", "M190"):
             if "S" not in params or set(params) - {"S", "T"}:
                 raise ValueError("Unsupported bed temperature command")
@@ -417,12 +467,43 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
         elif op in ("M106", "M107"):
             if set(params) - {"S", "P"}:
                 raise ValueError("Unsupported fan command")
-            if "P" in params and tool_number(params["P"]) != selected:
+            target = tool_number(params.get("P", active))
+            if not dual and target != selected:
                 continue
             speed = params.get("S", 255 if op == "M106" else 0)
             if not 0 <= speed <= 255:
                 raise ValueError("Fan speed out of range")
+            if dual:
+                fan_speeds[target] = round(speed)
+                if target != active:
+                    continue
             output.append(f"M106 S{round(speed)}" if op == "M106" else "M107")
+        elif dual and op in ("G0", "G1"):
+            words = dict(PARAMETER.findall(line.partition(";")[0]))
+            if set(params) - {"X", "Y", "Z", "E", "F"}:
+                raise ValueError("Unsupported alternating-head motion parameters.")
+            if "F" in params:
+                if params["F"] <= 0:
+                    raise ValueError("Movement feedrate must be positive.")
+                source_feed = params["F"]
+                source_feed_text = words["F"]
+            if source_feed is None:
+                raise ValueError("Alternating-head motion requires an explicit initial feedrate.")
+            remaining = {key: value for key, value in params.items() if key not in ("Z", "F")}
+            if "Z" in params:
+                # The native reader applies nozzle-height compensation to standalone Z commands.
+                native_feed = min(source_feed, 420)
+                output.append(f"G1 Z{words['Z']} F{source_feed_text if source_feed <= 420 else '420'}")
+            if remaining or "Z" not in params:
+                code = "G1"
+                if "F" in params or native_feed != source_feed:
+                    code += f" F{source_feed_text}"
+                code += "".join(f" {key}{words[key]}" for key in remaining)
+                comment = line.partition(";")[2]
+                if comment:
+                    code += " ;" + comment
+                output.append(code)
+                native_feed = source_feed
         else:
             if mode_number and op == "G0":
                 line = re.sub(r"^G0(?=\s)", "G1", line)
@@ -444,14 +525,20 @@ class Creator3Native(Script):
             "settings": {
                 "mode": {
                     "label": "Print mode",
-                    "description": "Single right/left. IDEX: models, raft and supports on T0. Native calPads are generated around the Cura paths, including raft and supports; Cura still slices the model.",
+                    "description": "Single right/left. Mirror/Duplicate: one right/T0 pilot with native calPads. Experimental alternating heads: separate Cura paths for both nozzles, XYZ calibration, prime tower and nozzle-switch retraction required.",
                     "type": "enum",
-                    "options": {"solo": "Single extruder (right or left)", "mirror": "IDEX Mirror + native calibration", "duplicate": "IDEX Duplicate + native calibration"},
+                    "options": {"solo": "Single extruder (right or left)", "mirror": "IDEX Mirror + native calibration", "duplicate": "IDEX Duplicate + native calibration", "dual": "Dual material / alternating heads (experimental)"},
                     "default_value": "solo",
                 },
                 "idex_calibrated": {
                     "label": "Single-extruder centering and IDEX calibration verified",
                     "description": "Required for IDEX. Confirm single-extruder centering and calibration of both nozzles on the printer. Native calPads are always retained.",
+                    "type": "bool",
+                    "default_value": False,
+                },
+                "dual_calibrated": {
+                    "label": "Experimental dual-head XYZ calibration verified",
+                    "description": "Required for alternating heads. Verify solo centering, both nozzle heights and the printer's dual-nozzle XYZ calibration. Enable a prime tower and nozzle-switch retraction. Firmware manages parking and height compensation. First prints must be supervised.",
                     "type": "bool",
                     "default_value": False,
                 },
@@ -488,7 +575,18 @@ class Creator3Native(Script):
                 depth=float(stack.getProperty("machine_depth", "value")),
                 height=float(stack.getProperty("machine_height", "value")),
                 idex_calibrated=self.getSettingValueByKey("idex_calibrated") in (True, "True", "true"),
+                dual_calibrated=self.getSettingValueByKey("dual_calibrated") in (True, "True", "true"),
             )
+            if config.mode == "dual":
+                if stack.getProperty("print_sequence", "value") != "all_at_once":
+                    raise ValueError("Alternating-head mode requires All at Once, not One at a Time.")
+                if not stack.getProperty("prime_tower_enable", "value"):
+                    raise ValueError("Enable a prime tower for experimental alternating-head printing.")
+                for train in trains:
+                    if float(train.getProperty("switch_extruder_retraction_amount", "value")) <= 0:
+                        raise ValueError("Enable nozzle-switch retraction for both extruders.")
+                    if train.getProperty("magic_spiralize", "value"):
+                        raise ValueError("Spiralize is not supported in alternating-head mode.")
             if config.mode in ("mirror", "duplicate") and STAMP not in "".join(data):
                 config = replace(config, calpads=scene_calpads(app, stack, trains, config, data))
             result = convert(data, config)

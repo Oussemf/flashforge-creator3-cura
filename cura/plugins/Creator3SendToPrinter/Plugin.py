@@ -5,8 +5,9 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import Event
 
-from PyQt6.QtCore import QCoreApplication, QObject, QThread, QTimer, pyqtProperty, pyqtSignal, pyqtSlot
-from PyQt6.QtNetwork import QNetworkInterface
+from PyQt6.QtCore import QCoreApplication, QObject, QThread, QTimer, QUrl, pyqtProperty, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QImage
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkInterface, QNetworkReply, QNetworkRequest
 from UM.Backend.Backend import BackendState
 from UM.Extension import Extension
 from UM.Logger import Logger
@@ -37,6 +38,91 @@ class Worker(QThread):
             self.result.emit(True, "", value)
 
 
+class CameraPreview(QObject):
+    changed = pyqtSignal()
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.network = QNetworkAccessManager(self)
+        self.timer = QTimer(self)
+        self.timer.setInterval(2000)
+        self.timer.timeout.connect(self.refresh)
+        self.reply = None
+        self.host = ""
+        self._source = ""
+        self._error = ""
+
+    @pyqtProperty(str, notify=changed)
+    def source(self):
+        return self._source
+
+    @pyqtProperty(str, notify=changed)
+    def error(self):
+        return self._error
+
+    @pyqtSlot(str)
+    def setHost(self, host):
+        if host:
+            host = address(host)
+        if host == self.host:
+            return
+        self.stop()
+        self.host = host
+        self._source = ""
+        self._error = ""
+        self.changed.emit()
+        if host:
+            self.timer.start()
+            self.refresh()
+
+    def stop(self):
+        self.timer.stop()
+        self.host = ""
+        if self.reply is not None:
+            reply, self.reply = self.reply, None
+            reply.abort()
+
+    @pyqtSlot()
+    def refresh(self):
+        if not self.host or self.reply is not None:
+            return
+        request = QNetworkRequest(QUrl(f"http://{self.host}:8080/?action=snapshot"))
+        request.setTransferTimeout(5000)
+        request.setAttribute(QNetworkRequest.Attribute.RedirectPolicyAttribute,
+                             QNetworkRequest.RedirectPolicy.ManualRedirectPolicy)
+        request.setRawHeader(b"Cache-Control", b"no-cache")
+        reply = self.network.get(request)
+        self.reply = reply
+        reply.downloadProgress.connect(
+            lambda received, total: reply.abort() if max(received, total) > 4 * 1024 * 1024 else None)
+        reply.finished.connect(lambda: self.finished(reply))
+
+    def finished(self, reply):
+        if reply is not self.reply:
+            reply.deleteLater()
+            return
+        self.reply = None
+        error = ""
+        if reply.error() != QNetworkReply.NetworkError.NoError:
+            error = reply.errorString()
+        elif reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) != 200:
+            error = "HTTP " + str(reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute))
+        else:
+            data = reply.readAll()
+            image = QImage()
+            if len(data) > 4 * 1024 * 1024 or not image.loadFromData(data, "JPEG"):
+                error = "Invalid camera JPEG"
+            else:
+                self._source = "data:image/jpeg;base64," + bytes(data.toBase64()).decode("ascii")
+        if error:
+            if error != self._error:
+                Logger.log("w", "Creator 3 camera %s: %s", self.host, error)
+            self._source = ""
+        self._error = error
+        reply.deleteLater()
+        self.changed.emit()
+
+
 class SendDevice(OutputDevice):
     def __init__(self, owner):
         super().__init__("creator3-send-to-printer")
@@ -58,6 +144,7 @@ class SendToPrinter(QObject, Extension):
     def __init__(self, app):
         super().__init__()
         self.app = app
+        self._camera = CameraPreview(self)
         self.device = SendDevice(self)
         self.dialog = None
         self.worker = None
@@ -98,6 +185,7 @@ class SendToPrinter(QObject, Extension):
         QTimer.singleShot(0, self.refresh_device)
 
     def shutdown(self):
+        self._camera.setHost("")
         self.monitor_timer.stop()
         for worker in (self.worker, self.status_worker):
             if worker is not None and worker.isRunning():
@@ -107,6 +195,10 @@ class SendToPrinter(QObject, Extension):
     @pyqtProperty(bool, notify=changed)
     def busy(self):
         return self._busy
+
+    @pyqtProperty(QObject, constant=True)
+    def camera(self):
+        return self._camera
 
     @pyqtProperty(int, notify=changed)
     def progress(self):
@@ -198,6 +290,7 @@ class SendToPrinter(QObject, Extension):
     @pyqtSlot(bool)
     def visibility(self, visible):
         if not visible:
+            self._camera.setHost("")
             self.monitor_timer.stop()
             if self.status_worker is not None:
                 self.status_worker.cancel.set()

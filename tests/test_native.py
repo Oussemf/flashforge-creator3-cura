@@ -51,7 +51,110 @@ def settings(mode="solo", calibrated=False):
     )
 
 
+def dual_source(first=0, extra=""):
+    second = 1 - first
+    return source(first, (
+        f"G1 F1800 E0\nG92 E0\nT{second}\nG92 E0\nM109 S217\n"
+        "G0 F3600 Z0.24\nG0 X-5 Y5\nG1 F1800 E1.3\n"
+        "G1 F1200 X5 Y-5 E2.53456\n"
+        f"{extra}G1 F1800 E1.23456\nG92 E0\nT{first}\nG92 E0\n"
+        "G0 F3600 Z0.44\nG0 X-5 Y-5\nG1 F1800 E1.3\n"
+        "G1 F1200 X5 Y5 E2.53456\n"
+    ))
+
+
+def dual_settings():
+    return native.PrintConfig("dual", 58, (215, 217), dual_calibrated=True)
+
+
 class NativeTests(unittest.TestCase):
+    def test_dual_native_startup_and_swapped_assignments(self):
+        for first in (0, 1):
+            with self.subTest(first=first):
+                output = native.convert(dual_source(first), dual_settings())[0]
+                self.assertIn("M118 X5.00 Y5.00 Z0.44 T0 T1\n", output)
+                self.assertIn("M104 S215 T0\nM104 S217 T1", output)
+                self.assertIn("M6 T0\nM6 T1", output)
+                self.assertIn(f"M108 T{1-first}\nM107\nG92 E0\nM104 S217 T{1-first}\nM6 T{1-first}", output)
+                self.assertIn(native.DUAL_STAMP, output)
+                self.assertNotRegex(output, r"(?m)^(?:T[01]|M109|;calPad)\b")
+
+    def test_dual_requires_opt_in_and_both_tools(self):
+        with self.assertRaisesRegex(ValueError, "Experimental"):
+            native.convert(dual_source(), native.PrintConfig("dual", 58, (215, 217)))
+        with self.assertRaisesRegex(ValueError, "both nozzles"):
+            native.convert(source(), dual_settings())
+        with self.assertRaisesRegex(ValueError, "nonzero"):
+            native.convert(dual_source(), native.PrintConfig("dual", 58, (215, 0), dual_calibrated=True))
+
+    def test_dual_independent_e_resets_and_precise_extrusion(self):
+        output = native.convert(dual_source(), dual_settings())[0]
+        expected = [
+            params["E"] for line in "".join(dual_source()).splitlines()
+            for op, params in [native.command(line)]
+            if op in ("G0", "G1") and "E" in params
+        ]
+        actual = [
+            params["E"] for line in output.splitlines()
+            if line.startswith("G1 ")
+            for op, params in [native.command(line)]
+            if op == "G1" and "E" in params
+        ]
+        self.assertEqual(actual, expected)
+        self.assertIn("E2.53456", output)
+        self.assertIn("G92 E0\nM108 T0", output)
+        precise = dual_source()[0].replace("E2.53456", "E2.53456001234567")
+        self.assertIn("E2.53456001234567", native.convert([precise], dual_settings())[0])
+
+    def test_dual_z_is_standalone_capped_and_xy_feed_is_restored(self):
+        output = native.convert(dual_source(), dual_settings())[0]
+        self.assertIn("G1 Z0.24 F420\nG1 F3600 X-5 Y5", output)
+        self.assertIn("G1 Z0.44 F420\nG1 F3600 X-5 Y-5", output)
+        for line in output.splitlines():
+            if not line.startswith("G1 "):
+                continue
+            op, params = native.command(line)
+            if op == "G1" and "Z" in params:
+                self.assertLessEqual(params["F"], 420)
+                self.assertEqual(set(params), {"Z", "F"})
+        with self.assertRaisesRegex(ValueError, "coordinated"):
+            native.convert(dual_source(extra="G1 X5 Z0.3 E3\n"), dual_settings())
+
+    def test_dual_switch_requires_reset_and_new_head_xy_position(self):
+        for old, new, error in (
+            ("T1\nG92 E0", "T1", "reset absolute E"),
+            ("G0 X-5 Y5", "G0 Y5", "before XY positioning"),
+            ("T1\n", "T1 F600\n", "additional parameters"),
+        ):
+            with self.subTest(error=error):
+                raw = [dual_source()[0].replace(old, new)]
+                with self.assertRaisesRegex(ValueError, error):
+                    native.convert(raw, dual_settings())
+
+    def test_dual_temperature_and_fan_addressing(self):
+        output = native.convert(dual_source(extra="M104 T0 S190\nM104 S218\nM106 P0 S128\nM106 P1 S200\n"), dual_settings())[0]
+        self.assertIn("M104 S190 T0\nM104 S218 T1", output)
+        self.assertIn("M106 S200", output)
+        self.assertIn("M108 T0\nM106 S128", output)
+
+    def test_dual_uses_full_bed_and_does_not_relax_old_modes(self):
+        output = native.convert([dual_source()[0].replace("X5 Y5", "X90 Y5")], dual_settings())[0]
+        self.assertIn("X90.00", output)
+        with self.assertRaisesRegex(ValueError, "outside"):
+            native.convert([dual_source()[0].replace("X5 Y5", "X151 Y5")], dual_settings())
+        for mode in ("solo", "mirror", "duplicate"):
+            with self.subTest(mode=mode), self.assertRaises(ValueError):
+                native.convert(dual_source(), settings(mode, mode != "solo"))
+
+    def test_dual_idempotence_and_stamp_confirmation(self):
+        config = dual_settings()
+        output = native.convert(dual_source(), config)
+        self.assertEqual(native.convert(output, config), output)
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            native.convert(output, native.PrintConfig("dual", 58, (215, 217)))
+        with self.assertRaisesRegex(ValueError, "confirmation"):
+            native.convert([output[0].replace(native.DUAL_STAMP, "")], config)
+
     def test_right_centered_and_native(self):
         output = native.convert(source(), settings())[0]
         self.assertIn("M108 T0", output)
@@ -225,7 +328,7 @@ class NativeTests(unittest.TestCase):
             setattr(module, symbol, value)
             modules[name] = module
         script = native.Creator3Native()
-        script.getSettingValueByKey = lambda key: {"mode": "duplicate", "idex_calibrated": False}[key]
+        script.getSettingValueByKey = lambda key: {"mode": "duplicate", "idex_calibrated": False, "dual_calibrated": False}[key]
         data = source()
         with patch.dict(sys.modules, modules), patch.object(native, "scene_calpads", side_effect=ValueError("Calibration unconfirmed")):
             with self.assertRaisesRegex(ValueError, "Calibration unconfirmed"):
@@ -240,6 +343,7 @@ class NativeTests(unittest.TestCase):
         schema = json.loads(native.Creator3Native().getSettingDataString())
         self.assertEqual(schema["settings"]["mode"]["default_value"], "solo")
         self.assertFalse(schema["settings"]["idex_calibrated"]["default_value"])
+        self.assertFalse(schema["settings"]["dual_calibrated"]["default_value"])
         machine = json.loads((ROOT / "cura" / "definitions" / "creator3_personal.def.json").read_text())
         self.assertEqual(machine["overrides"]["machine_extruder_count"]["default_value"], 2)
         self.assertTrue(machine["overrides"]["machine_center_is_zero"]["default_value"])
