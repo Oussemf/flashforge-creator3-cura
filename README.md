@@ -287,11 +287,13 @@ That envelope is used **only to generate native calibration pads**. It is not ad
 
 Open **Extensions > Creator 3 - Send to printer > Send sliced build plate...**, or choose **Send to printer** from Cura's output-device choices for this integration printer.
 
-![English Send to printer window](docs/send-to-printer.png)
+![English Send to printer window with an embedded camera image](docs/send-to-printer.png)
+
+The **Camera preview** frame displays the selected printer's camera image directly inside this window, alongside the job details—no browser or FlashPrint window is needed. The screenshot uses simulated printer status and a camera image from my printer.
 
 1. Click **Discover**, or enter a friendly name and **IPv4 address**, then **Add**.
 2. Select a target printer. The selection and target list persist in local Cura preferences.
-3. Check the reported state, **L/R nozzle temperatures**, bed temperature and progress.
+3. Check the reported state, **L/R nozzle temperatures**, bed temperature and progress. View the printer's camera image in the **Camera preview** frame.
 4. Once slicing is complete and the printer reports a fresh **Ready** state, click **Send**.
 5. Wait for the confirmed upload.
 6. Optionally choose **Start print...**, check the file and target shown in the confirmation, then explicitly confirm.
