@@ -91,6 +91,13 @@ class InstallationTests(unittest.TestCase):
             config, cache, backups = base / "config", base / "cache", base / "backups"
             config.mkdir()
             (config / "original.cfg").write_bytes(b"original\n")
+            module = base / "modules" / "Microsoft.PowerShell.Utility"
+            module.mkdir(parents=True)
+            (module / "Microsoft.PowerShell.Utility.psd1").write_text(
+                "@{ModuleVersion='99.0.0';RootModule='Utility.psm1';FunctionsToExport=@()}\n",
+                encoding="utf-8",
+            )
+            (module / "Utility.psm1").write_text("# Foreign utility module without hash functions.\n")
             for script in ("install.ps1", "restore.ps1"):
                 if script == "install.ps1":
                     arguments = f"-ConfigPath '{config}' -CachePath '{cache}' -BackupRoot '{backups}'"
@@ -100,8 +107,10 @@ class InstallationTests(unittest.TestCase):
                 script_path = str(ROOT / script).replace("'", "''")
                 wrapper.write_text(
                     "$ErrorActionPreference = 'Stop'\n"
-                    "Import-Module Microsoft.PowerShell.Utility\n"
+                    "Import-Module (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')\n"
                     "Remove-Item Function:\\Get-FileHash\n"
+                    "Remove-Module Microsoft.PowerShell.Utility\n"
+                    f"$env:PSModulePath = '{module.parent}'\n"
                     "$PSModuleAutoloadingPreference = 'None'\n"
                     f"& '{script_path}' {arguments}\n",
                     encoding="utf-8",
