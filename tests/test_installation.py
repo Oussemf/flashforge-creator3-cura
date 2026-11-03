@@ -1,9 +1,11 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,10 +14,14 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(sys.platform == "win32", "PowerShell installer requires Windows")
 class InstallationTests(unittest.TestCase):
     def invoke(self, script, *arguments):
+        # A pwsh runner's module paths can shadow Windows PowerShell's built-in modules.
+        environment = os.environ.copy()
+        environment.pop("PSModulePath", None)
         return subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              str(ROOT / script), *map(str, arguments)],
             capture_output=True, text=True, timeout=60,
+            env=environment,
         )
 
     def test_install_backup_restore_and_changed_file_protection(self):
@@ -84,3 +90,15 @@ class InstallationTests(unittest.TestCase):
                 result = self.invoke("install.ps1", "-ConfigPath", config, "-CachePath", base / "cache", "-BackupRoot", backup)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Backups must be outside", result.stderr)
+
+
+class PowerShellEnvironmentTests(unittest.TestCase):
+    def test_installer_and_restore_rebuild_native_module_paths(self):
+        with patch.dict(os.environ, {"PSModulePath": "foreign-pwsh-modules", "C3_TEST_ENV": "preserved"}):
+            with patch.object(subprocess, "run") as run:
+                for script in ("install.ps1", "restore.ps1"):
+                    InstallationTests().invoke(script)
+                    environment = run.call_args.kwargs["env"]
+                    self.assertNotIn("PSModulePath", environment)
+                    self.assertEqual(environment["C3_TEST_ENV"], "preserved")
+                    self.assertEqual(os.environ["PSModulePath"], "foreign-pwsh-modules")
