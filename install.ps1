@@ -7,6 +7,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell does not always autoload the module's Get-FileHash function.
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 if ($CuraVersion -notmatch '^\d+\.\d+$') { throw 'CuraVersion must use major.minor format.' }
 $defaultConfig = Join-Path $env:APPDATA "cura\$CuraVersion"
 $defaultCache = Join-Path $env:LOCALAPPDATA "cura\$CuraVersion"

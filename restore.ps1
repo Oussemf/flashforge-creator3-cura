@@ -5,6 +5,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell does not always autoload the module's Get-FileHash function.
+Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop
 $BackupPath = (Resolve-Path -LiteralPath $BackupPath).Path
 $journal = Get-Content -LiteralPath (Join-Path $BackupPath 'installation.json') -Raw | ConvertFrom-Json
 $isDefaultConfig = [IO.Path]::GetFullPath($journal.config_path).StartsWith(

@@ -1,11 +1,9 @@
 import json
-import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,14 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 @unittest.skipUnless(sys.platform == "win32", "PowerShell installer requires Windows")
 class InstallationTests(unittest.TestCase):
     def invoke(self, script, *arguments):
-        # A pwsh runner's module paths can shadow Windows PowerShell's built-in modules.
-        environment = os.environ.copy()
-        environment.pop("PSModulePath", None)
         return subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
              str(ROOT / script), *map(str, arguments)],
             capture_output=True, text=True, timeout=60,
-            env=environment,
         )
 
     def test_install_backup_restore_and_changed_file_protection(self):
@@ -91,14 +85,28 @@ class InstallationTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("Backups must be outside", result.stderr)
 
-
-class PowerShellEnvironmentTests(unittest.TestCase):
-    def test_installer_and_restore_rebuild_native_module_paths(self):
-        with patch.dict(os.environ, {"PSModulePath": "foreign-pwsh-modules", "C3_TEST_ENV": "preserved"}):
-            with patch.object(subprocess, "run") as run:
-                for script in ("install.ps1", "restore.ps1"):
-                    InstallationTests().invoke(script)
-                    environment = run.call_args.kwargs["env"]
-                    self.assertNotIn("PSModulePath", environment)
-                    self.assertEqual(environment["C3_TEST_ENV"], "preserved")
-                    self.assertEqual(os.environ["PSModulePath"], "foreign-pwsh-modules")
+    def test_install_restore_without_hash_function_autoload(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            config, cache, backups = base / "config", base / "cache", base / "backups"
+            config.mkdir()
+            (config / "original.cfg").write_bytes(b"original\n")
+            for script in ("install.ps1", "restore.ps1"):
+                if script == "install.ps1":
+                    arguments = f"-ConfigPath '{config}' -CachePath '{cache}' -BackupRoot '{backups}'"
+                else:
+                    arguments = f"-BackupPath '{next(backups.iterdir())}'"
+                wrapper = base / "without-autoload.ps1"
+                script_path = str(ROOT / script).replace("'", "''")
+                wrapper.write_text(
+                    "$ErrorActionPreference = 'Stop'\n"
+                    "Import-Module Microsoft.PowerShell.Utility\n"
+                    "Remove-Item Function:\\Get-FileHash\n"
+                    "$PSModuleAutoloadingPreference = 'None'\n"
+                    f"& '{script_path}' {arguments}\n",
+                    encoding="utf-8",
+                )
+                result = self.invoke(wrapper)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((config / "original.cfg").read_bytes(), b"original\n")
+            self.assertFalse((config / "scripts" / "Creator3Native.py").exists())

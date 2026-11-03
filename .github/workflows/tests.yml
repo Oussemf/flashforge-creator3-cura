@@ -17,15 +17,4 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-      - name: Diagnose Windows PowerShell modules
-        if: runner.os == 'Windows'
-        shell: powershell
-        run: |
-          $PSVersionTable
-          Write-Host "PSHOME=$PSHOME"
-          Write-Host "PSModulePath=$env:PSModulePath"
-          Get-Module -ListAvailable Microsoft.PowerShell.Utility | Format-List Name,Version,Path,ExportedCommands
-          Get-ChildItem "$PSHOME\Modules\Microsoft.PowerShell.Utility"
-          Import-Module Microsoft.PowerShell.Utility -Verbose
-          Get-Command Get-FileHash -ErrorAction Continue | Format-List *
       - run: python -m unittest discover -s tests -v
