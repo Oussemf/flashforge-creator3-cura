@@ -58,7 +58,6 @@ This is the story of my investigation on one machine, **not a claim that every c
 | Cura-generated supports, including trees | Yes | In IDEX, supports and interfaces also belong to right/T0 |
 | Multiple ordinary models on one plate | Yes | Print all at once; one pilot tool for the entire arrangement |
 | Sequential bicolor printing (alternating independent heads) | Yes | Both nozzles alternate within one All at Once job; initial two-L print validated |
-| One-at-a-time object printing | No | Completing one object before starting another is explicitly rejected |
 | Modifier meshes or custom support meshes in IDEX | No | Explicitly rejected |
 | Alternating nozzles / dual-material / dual-color | Yes | Initial two-L test printed successfully; broader material/model combinations remain experimental |
 | Native IDEX with other nozzle/filament diameters | Not validated | Currently restricted to 0.4 mm and 1.75 mm |
@@ -212,7 +211,7 @@ The script derives the selected nozzle from Cura's actual toolpath. There is no 
 
 ## Alternating heads: experimental dual-material printing
 
-This is **not Mirror or Duplicate**. Cura assigns paths to each nozzle and alternates between them. The other nozzle is parked while the active nozzle prints. It is also **not One at a Time**: neither head completes a whole object before the other begins.
+This is **not Mirror or Duplicate**. Cura assigns paths to each nozzle and alternates between them. The other nozzle is parked while the active nozzle prints.
 
 **Status:** I compared two controlled FlashPrint exports with the nozzle assignments swapped, then examined the native file reader to understand parking, extrusion resets and height compensation. Actual Cura exports with both assignments, plus a raft job, passed the native post-processing and Send to printer workflow against a loopback simulator. My initial two-L alternating-head test also **printed successfully on my Creator 3**. This does not validate every geometry, material combination or mixed-material support interface; the mode remains experimental.
 
@@ -242,7 +241,7 @@ Models, normal Cura supports/interfaces and adhesion paths retain their assigned
 - Z changes become **standalone `G1 Z...` commands**, because that is where the native file reader applies nozzle-height compensation. Z speed is capped at **7 mm/s**, and the following XY/E feedrate is restored. Logical Z heights and extrusion endpoints are retained.
 - Fan commands follow the active head; explicitly addressed fan settings are restored when that head is selected again.
 - Alternating mode does **not** generate mirror/duplicate calPads. Send to printer requires a distinct experimental export stamp and rejects mixed synchronous/alternating initialization.
-- One at a Time, spiralize, coordinated Z/extrusion moves, missing prime towers and disabled switch retraction are rejected. Full-bed bounds remain enforced.
+- Spiralize, coordinated Z/extrusion moves, missing prime towers and disabled switch retraction are rejected. Full-bed bounds remain enforced.
 
 Keep the default **Single extruder** mode for known-good jobs until the alternating-head test has passed on your own printer.
 
