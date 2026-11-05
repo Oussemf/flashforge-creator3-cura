@@ -69,7 +69,7 @@ The current distribution targets **Windows and Cura 5.12 / plugin API 8**. Other
 
 ## Requirements
 
-- The original Flashforge Creator 3, correctly leveled and calibrated.
+- A Flashforge Creator 3, correctly leveled and calibrated.
 - **UltiMaker Cura 5.12**, launched at least once so its configuration folder exists.
 - Cura's bundled Post Processing, STLWriter and GCodeWriter plugins.
 - Two configured extruders; calibrated **0.4 mm nozzles**, **1.75 mm filament** for IDEX.
