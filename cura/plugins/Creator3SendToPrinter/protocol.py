@@ -18,6 +18,7 @@ PORT = 8899
 BLOCK_SIZE = 4096
 REMOTE_ROOT = "0:/user/"
 MAX_NAME_BYTES = 25
+MAX_BED_TEMPERATURE = 120
 
 
 class PrinterError(ValueError):
@@ -26,6 +27,11 @@ class PrinterError(ValueError):
 
 class Cancelled(PrinterError):
     pass
+
+
+def validate_bed_temperature(temperature: int) -> None:
+    if type(temperature) is not int or not 0 <= temperature <= MAX_BED_TEMPERATURE:
+        raise PrinterError(f"Bed temperature must be a whole number from 0 to {MAX_BED_TEMPERATURE} C")
 
 
 @dataclass(frozen=True)
@@ -159,8 +165,18 @@ def discover(interfaces: list[str], cancel: Event, duration: float = 4) -> tuple
             sock.close()
 
 
+def pending_upload_idle(status: dict) -> bool:
+    # M28 leaves the network state BUILDING after M29 on the original Creator 3.
+    return (
+        status.get("state") == "BUILDING"
+        and status.get("move_mode") == "READY"
+        and status.get("controller") == {"S": 1, "L": 0, "J": 0, "F": 0}
+        and status.get("print_bytes") == (0, 1000)
+    )
+
+
 class Client:
-    def __init__(self, host: str, cancel: Event, port: int = PORT):
+    def __init__(self, host: str, cancel: Event, port: int = PORT, *, pending_start: str | None = None):
         self.host = address(host)
         self.cancel = cancel
         self.port = port
@@ -169,10 +185,13 @@ class Client:
         self.control = False
         self.raw_transfer = False
         self.incomplete_upload = False
+        if pending_start is not None:
+            remote_path(pending_start)
+        self.pending_start = pending_start
 
     def _check_cancel(self) -> None:
         if self.cancel.is_set():
-            raise Cancelled("Upload cancelled; do not print the partial file")
+            raise Cancelled("Network operation cancelled; check printer state before retrying")
 
     def __enter__(self):
         self._check_cancel()
@@ -181,14 +200,14 @@ class Client:
         try:
             info = self.command("M115")
             require_creator3(info)
-            self.ready()
+            self.ready_for_operation()
             response = self.command("M601 S1")
             version = re.search(r"^Control Success V(\d+\.\d+)\s*$", response, re.M)
             if "Control Success." not in response and version is None:
                 raise PrinterError("Control denied: disconnect FlashPrint and try again")
             self.control = True
             self.raw_transfer = version is not None and float(version.group(1)) >= 2
-            self.ready()
+            self.ready_for_operation()
             return self
         except (OSError, ValueError) as error:
             try:
@@ -252,7 +271,20 @@ class Client:
         if not re.search(r"MachineStatus\s*:\s*READY\b", status, re.I):
             raise PrinterError("Printer not ready (printing, paused or in error): " + status)
 
+    def ready_for_operation(self) -> None:
+        if self.pending_start is None:
+            self.ready()
+            return
+        status = self.command("M119")
+        if re.search(r"MachineStatus\s*:\s*READY\b", status, re.I):
+            return
+        parsed = parse_status(status, "", self.command("M27"))
+        if not pending_upload_idle(parsed):
+            raise PrinterError("Uploaded-file start requires an idle printer: " + status)
+
     def upload(self, path: Path, name: str, progress: Callable[[int], None]) -> None:
+        if self.pending_start is not None:
+            raise PrinterError("A pending-start connection cannot upload another file")
         validate_gcode(path)
         target = remote_path(name)
         size = path.stat().st_size
@@ -271,7 +303,7 @@ class Client:
                 else:
                     self.sock.sendall(packet(sequence, chunk))
                     ack = self._line().strip()
-                    if ack != f"N{sequence} ok":
+                    if re.fullmatch(rf"N0*{sequence} ok\.?", ack) is None:
                         raise PrinterError(f"Block {sequence} not acknowledged: {ack}")
                 sent += len(chunk)
                 current_progress = min(99, int(sent * 100 / size))
@@ -289,8 +321,17 @@ class Client:
         progress(100)
 
     def start(self, name: str) -> None:
-        self.ready()
+        if self.pending_start is not None and name != self.pending_start:
+            raise PrinterError("Start filename differs from the confirmed upload")
+        self.ready_for_operation()
         self.command("M23 " + remote_path(name))
+
+    def preheat_bed(self, temperature: int) -> None:
+        if self.pending_start is not None:
+            raise PrinterError("A pending-start connection cannot change heater targets")
+        validate_bed_temperature(temperature)
+        self.ready()
+        self.command(f"M140 S{temperature}")
 
 
 def require_creator3(info: str) -> None:
@@ -307,13 +348,24 @@ def parse_status(status: str, temperatures: str, printing: str) -> dict:
         tool, current, target = match.groups()
         values[tool] = f"{float(current):g}/{float(target):g}"
     progress = None
+    print_bytes = None
     match = re.search(r"SD printing byte\s+(\d+)\s*/\s*(\d+)", printing, re.I)
     if match is not None:
         current, total = map(int, match.groups())
+        print_bytes = (current, total)
         if total > 0:
             progress = min(100, current * 100 / total)
     return {
         "state": state.group(1).upper(),
+        "move_mode": (
+            move.group(1).upper()
+            if (move := re.search(r"MoveMode\s*:\s*([A-Z_]+)", status, re.I)) else None
+        ),
+        "controller": (
+            {key: int(value) for key, value in re.findall(r"\b([SLJF]):(\d+)\b", flags.group(1))}
+            if (flags := re.search(r"^Status:\s*(.*)$", status, re.M)) else None
+        ),
+        "print_bytes": print_bytes,
         "right": values.get("T0", values.get("T", "--")),
         "left": values.get("T1", "--"),
         "bed": values.get("B", "--"),

@@ -7,9 +7,9 @@ UM.Dialog {
     id: dialog
     title: "Creator 3 - Send to printer"
     width: 850 * screenScaleFactor
-    height: 610 * screenScaleFactor
+    height: 670 * screenScaleFactor
     minimumWidth: 750 * screenScaleFactor
-    minimumHeight: 560 * screenScaleFactor
+    minimumHeight: 640 * screenScaleFactor
     backgroundColor: UM.Theme.getColor("main_background")
     onVisibleChanged: manager.visibility(visible)
     property string cameraHost: visible && cameraEnabled.checked
@@ -96,6 +96,28 @@ UM.Dialog {
                     wrapMode: Text.Wrap
                     color: UM.Theme.getColor("text")
                 }
+                RowLayout {
+                    Label { text: "Bed target (C)"; color: UM.Theme.getColor("text") }
+                    SpinBox {
+                        id: bedTemperature
+                        objectName: "bedTemperature"
+                        from: 0
+                        to: manager.maxBedTemperature
+                        value: 60
+                        stepSize: 1
+                        enabled: !manager.busy
+                    }
+                    Button {
+                        objectName: "preheatBedButton"
+                        text: "Preheat bed"
+                        enabled: !manager.busy && !manager.monitoring
+                            && printers.currentIndex >= 0 && printers.currentIndex < manager.printers.length
+                            && manager.printers[printers.currentIndex].ready
+                        onClicked: manager.preheatBed(printers.currentIndex, bedTemperature.value)
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Set the selected idle printer's bed target. Use 0 C to switch heating off."
+                    }
+                }
             }
             ColumnLayout {
                 Layout.preferredWidth: 240 * screenScaleFactor
@@ -140,7 +162,7 @@ UM.Dialog {
             }
         }
         ProgressBar { from: 0; to: 100; value: manager.progress; Layout.fillWidth: true; visible: manager.busy }
-        Label { text: manager.status; Layout.fillWidth: true; Layout.fillHeight: true; wrapMode: Text.Wrap; color: UM.Theme.getColor("text") }
+        Label { text: manager.status; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: implicitHeight; wrapMode: Text.Wrap; color: UM.Theme.getColor("text") }
         RowLayout {
             Layout.fillWidth: true
             Button { text: "Cancel operation"; visible: manager.busy; onClicked: manager.cancel() }

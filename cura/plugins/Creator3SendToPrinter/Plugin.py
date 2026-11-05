@@ -16,7 +16,10 @@ from UM.Mesh.MeshWriter import MeshWriter
 from UM.OutputDevice.OutputDevice import OutputDevice
 from UM.OutputDevice import OutputDeviceError
 
-from .protocol import Client, Printer, address, discover, read_status, transfer_name, validate_gcode
+from .protocol import (
+    MAX_BED_TEMPERATURE, Client, Printer, address, discover, pending_upload_idle, read_status,
+    transfer_name, validate_bed_temperature, validate_gcode,
+)
 
 
 class Worker(QThread):
@@ -132,7 +135,8 @@ class SendDevice(OutputDevice):
         self.setDescription("Send to a Flashforge Creator 3...")
         self.setIconName("print")
 
-    def requestWrite(self, nodes, file_name=None, **kwargs):
+    def requestWrite(self, nodes, file_name=None, limit_mimetypes=False,
+                     file_handler=None, filter_by_machine=False, **kwargs):
         if self.owner.busy:
             raise OutputDeviceError.DeviceBusyError()
         self.owner.open_dialog(file_name)
@@ -200,6 +204,10 @@ class SendToPrinter(QObject, Extension):
     def camera(self):
         return self._camera
 
+    @pyqtProperty(int, constant=True)
+    def maxBedTemperature(self):
+        return MAX_BED_TEMPERATURE
+
     @pyqtProperty(int, notify=changed)
     def progress(self):
         return self._progress
@@ -217,7 +225,11 @@ class SendToPrinter(QObject, Extension):
         if self._uploaded is None or self._busy or self.monitoring:
             return False
         printer, _ = self._uploaded
-        return any(p["address"] == printer.address and p["ready"] for p in self.printers)
+        status = self._statuses.get(printer.address, {})
+        return (
+            time.monotonic() - status.get("checked", 0) <= 25
+            and (status.get("state") == "READY" or pending_upload_idle(status))
+        )
 
     @pyqtProperty(bool, notify=changed)
     def monitoring(self):
@@ -501,10 +513,52 @@ class SendToPrinter(QObject, Extension):
             self.error(error + "\nNo start command was sent. A partial file may remain on the printer.")
             return
         self._uploaded = value
+        self._statuses.pop(value[0].address, None)
         printer, name = value
         self._status = f"Upload confirmed: {name} on {printer.name}. Printing has NOT started."
         self.changed.emit()
         Message(self._status, title="Creator 3 - file uploaded", lifetime=0).show()
+
+    @pyqtSlot(int, int)
+    def preheatBed(self, index, temperature):
+        if self._busy:
+            return
+        if self.monitoring:
+            self.error("Status refresh in progress: wait before preheating")
+            return
+        if not 0 <= index < len(self._printers):
+            self.error("Select a printer or add its IP address")
+            return
+        try:
+            validate_bed_temperature(temperature)
+        except ValueError as error:
+            self.error(str(error))
+            return
+        if not self.printers[index]["ready"]:
+            self.error("Printer not ready or status unconfirmed: refresh its status before preheating")
+            return
+        printer = self._printers[index]
+        self._status = f"Setting bed target to {temperature} C on {printer.name}..."
+
+        def operation(cancel, progress):
+            with Client(printer.address, cancel, printer.port) as client:
+                client.preheat_bed(temperature)
+            return printer, temperature
+
+        self.launch(operation, self.preheat_done)
+
+    def preheat_done(self, success, error, value):
+        self._statuses.clear()
+        if not success:
+            self.error("Bed target not confirmed; heating may still be active. Check the printer: " + error)
+            return
+        printer, temperature = value
+        self._status = (
+            f"Bed target acknowledged: {temperature} C on {printer.name}. "
+            + ("Heating is off." if temperature == 0 else "Heating continues on the printer.")
+            + " No print was started."
+        )
+        self.changed.emit()
 
     @pyqtSlot()
     def startPrint(self):
@@ -516,7 +570,7 @@ class SendToPrinter(QObject, Extension):
         self._status = f"Start requested: {name} on {printer.name}"
 
         def operation(cancel, progress):
-            with Client(printer.address, cancel, printer.port) as client:
+            with Client(printer.address, cancel, printer.port, pending_start=name) as client:
                 client.start(name)
             return name
 

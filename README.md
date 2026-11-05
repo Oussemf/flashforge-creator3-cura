@@ -57,9 +57,10 @@ This is the story of my investigation on one machine, **not a claim that every c
 | Raft, skirt, brim | Yes | In IDEX, assign them to right/T0 |
 | Cura-generated supports, including trees | Yes | In IDEX, supports and interfaces also belong to right/T0 |
 | Multiple ordinary models on one plate | Yes | Print all at once; one pilot tool for the entire arrangement |
-| Sequential, one-at-a-time IDEX printing | No | Explicitly rejected |
+| Sequential bicolor printing (alternating independent heads) | Yes | Both nozzles alternate within one All at Once job; initial two-L print validated |
+| One-at-a-time object printing | No | Completing one object before starting another is explicitly rejected |
 | Modifier meshes or custom support meshes in IDEX | No | Explicitly rejected |
-| Alternating nozzles / dual-material / dual-color | Experimental | Real Cura exports and loopback transfer verified; physical printing not yet validated |
+| Alternating nozzles / dual-material / dual-color | Yes | Initial two-L test printed successfully; broader material/model combinations remain experimental |
 | Native IDEX with other nozzle/filament diameters | Not validated | Currently restricted to 0.4 mm and 1.75 mm |
 | Printer discovery, live status and upload | Yes | Local IPv4 network; no cloud account required by this extension |
 | Optional start after upload | Yes | Separate confirmation; never starts automatically after sending |
@@ -213,7 +214,7 @@ The script derives the selected nozzle from Cura's actual toolpath. There is no 
 
 This is **not Mirror or Duplicate**. Cura assigns paths to each nozzle and alternates between them. The other nozzle is parked while the active nozzle prints. It is also **not One at a Time**: neither head completes a whole object before the other begins.
 
-**Status:** I compared two controlled FlashPrint exports with the nozzle assignments swapped, then examined the native file reader to understand parking, extrusion resets and height compensation. Actual Cura exports with both assignments, plus a raft job, passed the native post-processing and Send to printer workflow against a loopback simulator. This is software validation, **not a successful physical dual-material print**. The examined firmware/controller binaries were newer than my installed versions; equivalence on my printer still needs a supervised test.
+**Status:** I compared two controlled FlashPrint exports with the nozzle assignments swapped, then examined the native file reader to understand parking, extrusion resets and height compensation. Actual Cura exports with both assignments, plus a raft job, passed the native post-processing and Send to printer workflow against a loopback simulator. My initial two-L alternating-head test also **printed successfully on my Creator 3**. This does not validate every geometry, material combination or mixed-material support interface; the mode remains experimental.
 
 ### Setup and first test
 
@@ -236,7 +237,7 @@ Models, normal Cura supports/interfaces and adhesion paths retain their assigned
 
 - Startup declares **`M118 ... T0 T1` without `D1/D2`** and heats/waits for both nozzles independently.
 - Cura `T0/T1` becomes native **`M108 T0/T1`**. The printer's file reader performs the head-change parking and uses its stored calibration; the exporter adds no guessed park positions or nozzle-height offsets.
-- Absolute extrusion is tracked per nozzle. Cura's **`G92 E...` resets after every switch are preserved**, including retraction and prime-tower extrusion. A switch without the required reset or fresh XY positioning is blocked.
+- Absolute extrusion and outstanding retraction are tracked per nozzle, across **`G92 E...` resets**. A switch without the required E reset is blocked. Before fresh XY positioning, only E-only recovery of previously retracted filament is allowed, and only for a head already positioned earlier in the job. New extrusion remains blocked until XY positioning; the original E values and motion order are preserved.
 - Native temperature waits use `M6`; Marlin `M109 S...` is never mistaken for the native synchronous IDEX command.
 - Z changes become **standalone `G1 Z...` commands**, because that is where the native file reader applies nozzle-height compensation. Z speed is capped at **7 mm/s**, and the following XY/E feedrate is restored. Logical Z heights and extrusion endpoints are retained.
 - Fan commands follow the active head; explicitly addressed fan settings are restored when that head is selected again.
@@ -287,6 +288,8 @@ That envelope is used **only to generate native calibration pads**. It is not ad
 
 Open **Extensions > Creator 3 - Send to printer > Send sliced build plate...**, or choose **Send to printer** from Cura's output-device choices for this integration printer.
 
+Both entry points open the same dialog. The main output button supports Cura's full output-device call signature, including its MIME filter and file-handler arguments.
+
 ![English Send to printer window with an embedded camera image](docs/send-to-printer.png)
 
 The **Camera preview** frame displays the selected printer's camera image directly inside this window, alongside the job details—no browser or FlashPrint window is needed. The screenshot uses simulated printer status and a camera image from my printer.
@@ -300,11 +303,21 @@ The **Camera preview** frame displays the selected printer's camera image direct
 
 **Upload alone never starts printing.** The start action remains tied to the printer and file that actually received the upload, not a newly selected target.
 
+On my original Creator 3, a completed upload leaves the network state at **BUILDING** even while the machine is idle. For the file just successfully uploaded in this dialog, **Start print...** also accepts that state only with fresh idle evidence: `MoveMode: READY`, controller `S:1 L:0 J:0 F:0`, and the idle `0/1000` progress counters. These checks are repeated before and after acquiring control and immediately before the single `M23` start request. This exception does **not** permit uploading another job or changing heater targets in BUILDING. A missing/stale status, motion, changed progress, pause or **BUILDING_FROM_SD** keeps start blocked. Closing/reopening the dialog clears its uploaded-file reference.
+
+The start command was verified on my printer with a large two-color badge/stand project: upload completion, a single acknowledged `M23`, then physical pre-print calibration. Calibration can take time before nozzle heating or file progress changes; do not retry an acknowledged start just because progress still reads zero.
+
 ![Separate print-start confirmation](docs/start-confirmation.png)
 
 Status refreshes every 10 seconds while the window is open. Monitoring does not acquire printer control, and missing values remain `--`. A printer reporting `BUILDING_FROM_SD` is displayed as **Printing from storage**, not as ready to receive a new job.
 
 The small **Camera preview** frame follows the selected printer and refreshes a JPEG snapshot every two seconds using its local HTTP camera service on port **8080**. It preserves the image's aspect ratio and does not modify focus, lighting, or printer settings. Disable the checkbox to stop viewing; closing the window also cancels camera requests. Camera failures are shown inside the frame and do not prevent uploading. Enable the camera on the printer if its service is off. This is a periodically refreshed preview, not the full-rate MJPEG stream; no images are saved to disk. Keep the camera port on a trusted LAN, never forwarded to the Internet.
+
+### Bed preheating
+
+Select an idle printer, adjust **Bed target (C)** with the up/down arrows (default **60 C**, range **0–120 C**), then click **Preheat bed**. The button requires a fresh **Ready** status and is disabled during another network operation. The extension verifies the printer model and idle state again before sending the native, non-waiting `M140 S...` command. It does not heat either nozzle, upload a file, move the printer or start printing.
+
+The acknowledgement confirms the **target was accepted**, not that the bed has reached it. Watch the current/target bed temperatures in the printer status. Setting **0 C** and clicking the button switches bed heating off. Closing the window or cancelling a network operation **does not turn heating off**; if a request is interrupted, check the target on the printer. Preheating is intentionally unavailable while printing or paused, so it cannot overwrite an active job's bed target.
 
 ### Filename limits
 
@@ -324,6 +337,9 @@ The basename is at most **25 bytes** including `.gcode`. With `0:/user/`, the re
 - Transfer control: `M601 S1`, then release with `M602`.
 - File transfer: `M28`, negotiated native payload format, confirmed `M29`.
 - Start: a separate, explicitly requested `M23`.
+- Bed preheating: a separate, explicitly requested `M140 S...`, without waiting for temperature.
+
+For packet-based transfers, block acknowledgements may include leading zeros and an optional final period (`N0000 ok.` instead of `N0 ok`). These forms are accepted only for the expected block number; wrong or repeated numbers, error replies and extra trailing text still stop the upload.
 
 The original protocol is not encrypted or intended for the Internet. Use a trusted LAN; do not expose the printer port through a router. Disconnect FlashPrint before an upload if it holds control.
 

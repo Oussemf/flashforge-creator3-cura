@@ -21,9 +21,10 @@ DUAL = b";CREATOR3_NATIVE_V1\n;mode:dual; source:Marlin\n;CREATOR3_DUAL_EXPERIME
 
 
 class FakePrinter:
-    def __init__(self, fault=None, fragment=False):
+    def __init__(self, fault=None, fragment=False, ack_format="N{sequence} ok"):
         self.fault = fault
         self.fragment = fragment
+        self.ack_format = ack_format
         self.commands = []
         self.payload = bytearray()
         self.error = None
@@ -74,7 +75,7 @@ class FakePrinter:
                         assert protocol.binascii.crc32(block[:count]) == crc
                         self.payload.extend(block[:count])
                         uploading -= count
-                        ack = f"N{sequence} ok\r\n".encode()
+                        ack = (self.ack_format.format(sequence=sequence) + "\r\n").encode()
                         if self.fault == "ack":
                             ack = f"N{sequence + 1} ok\r\n".encode()
                         elif self.fault == "crc":
@@ -97,12 +98,23 @@ class FakePrinter:
                     elif op == "M115":
                         response += "Machine Type: " + ("Adventurer 3" if self.fault == "model" else "Creator 3") + "\r\n"
                     elif op == "M119":
-                        busy = self.fault == "busy" or (self.fault == "busy-after-control" and "~M601 S1" in self.commands)
-                        response += "MachineStatus: " + ("PRINTING" if busy else "READY") + "\r\n"
+                        busy = (
+                            self.fault == "busy"
+                            or (self.fault == "busy-after-control" and "~M601 S1" in self.commands)
+                            or (self.fault == "busy-before-preheat" and self.commands.count("~M119") >= 3)
+                        )
+                        if self.fault in ("upload-idle", "upload-moving", "upload-progress", "upload-busy-after-control"):
+                            active = self.fault == "upload-busy-after-control" and "~M601 S1" in self.commands
+                            response += "MachineStatus: BUILDING\r\nMoveMode: " + ("MOVING" if active or self.fault == "upload-moving" else "READY")
+                            response += "\r\nStatus: S:1 L:0 J:0 F:0\r\n"
+                        else:
+                            response += "MachineStatus: " + ("PRINTING" if busy else "READY") + "\r\n"
+                    elif op == "M140" and self.fault == "heater":
+                        response += "heater command failed\r\n"
                     elif op == "M105":
                         response += "T0:215/215 T1:214/215 B:58/58\r\n"
                     elif op == "M27":
-                        response += "SD printing byte 20/100\r\n"
+                        response += "SD printing byte 0/1000\r\n" if self.fault in ("upload-idle", "upload-moving", "upload-busy-after-control") else "SD printing byte 20/100\r\n"
                     elif op == "M28":
                         if self.fault == "space":
                             response += "out of space\r\n"
@@ -129,6 +141,40 @@ class FakePrinter:
 
 
 class SendTests(unittest.TestCase):
+    def test_preheat_bed_exact_command_and_no_print_or_nozzle_changes(self):
+        for temperature in (0, 60, protocol.MAX_BED_TEMPERATURE):
+            with self.subTest(temperature=temperature), FakePrinter(fragment=True) as server:
+                with protocol.Client("127.0.0.1", threading.Event(), server.port) as client:
+                    client.preheat_bed(temperature)
+                self.assertEqual(server.commands, [
+                    "~M115", "~M119", "~M601 S1", "~M119", "~M119",
+                    f"~M140 S{temperature}", "~M602",
+                ])
+
+    def test_preheat_bed_invalid_temperature_sends_nothing(self):
+        client = protocol.Client("127.0.0.1", threading.Event())
+        for temperature in (-1, 121, True, 60.5, "60", "60\nM23"):
+            with self.subTest(temperature=temperature), patch.object(client, "command") as command:
+                with self.assertRaises(protocol.PrinterError):
+                    client.preheat_bed(temperature)
+                command.assert_not_called()
+
+    def test_preheat_bed_rechecks_model_control_and_ready(self):
+        for fault in ("model", "control", "busy", "busy-after-control", "busy-before-preheat"):
+            with self.subTest(fault=fault), FakePrinter(fault=fault) as server:
+                with self.assertRaises(protocol.PrinterError):
+                    with protocol.Client("127.0.0.1", threading.Event(), server.port) as client:
+                        client.preheat_bed(60)
+                self.assertFalse(any(command.startswith("~M140") for command in server.commands))
+
+    def test_preheat_bed_rejection_is_explicit_and_control_is_released(self):
+        with FakePrinter(fault="heater") as server:
+            with self.assertRaisesRegex(protocol.PrinterError, "rejected M140"):
+                with protocol.Client("127.0.0.1", threading.Event(), server.port) as client:
+                    client.preheat_bed(60)
+            self.assertEqual(server.commands[-1], "~M602")
+            self.assertEqual(server.commands.count("~M140 S60"), 1)
+
     def test_dual_requires_stamp_native_selection_and_no_sync_mode(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "dual.gcode"
@@ -263,6 +309,47 @@ class SendTests(unittest.TestCase):
             self.assertEqual(server.commands[-2:], ["~M29", "~M602"])
             self.assertFalse(any(c.startswith(("~M23", "~M24")) for c in server.commands))
 
+    def test_upload_accepts_zero_padded_block_numbers(self):
+        for ack_format in (
+            "N{sequence} ok", "N{sequence:04d} ok", "N{sequence:08d} ok",
+            "N{sequence} ok.", "N{sequence:04d} ok.", "N{sequence:08d} ok.",
+            "N000{sequence} ok.",
+        ):
+            with self.subTest(ack_format=ack_format), tempfile.TemporaryDirectory() as root:
+                content = NATIVE + b";padding\n" * 6000
+                path = Path(root) / "job.gcode"
+                path.write_bytes(content)
+                progress = []
+                with FakePrinter(fragment=True, ack_format=ack_format) as server:
+                    with protocol.Client("127.0.0.1", threading.Event(), server.port) as client:
+                        client.upload(path, "test.gcode", progress.append)
+                    self.assertEqual(server.payload, content)
+                    self.assertEqual(server.commands, [
+                        "~M115", "~M119", "~M601 S1", "~M119",
+                        f"~M28 {len(content)} 0:/user/test.gcode", "~M29", "~M602",
+                    ])
+                self.assertEqual(progress[-1], 100)
+
+    def test_upload_rejects_wrong_or_malformed_padded_acknowledgements(self):
+        for ack_format, block in (
+            ("N0001 ok", 0), ("N0010 ok", 0), ("N0000 error", 0), ("N0000 ok extra", 0),
+            ("prefix N0000 ok", 0), ("N+0000 ok", 0), ("N0000.0 ok", 0),
+            ("N ok", 0), ("ok", 0), ("N0000 ok", 1),
+            ("N0001 ok.", 0), ("N0000 ok..", 0), ("N0000 ok. extra", 0),
+            ("N0000 error.", 0), ("N0000 ok.", 1),
+        ):
+            with self.subTest(ack_format=ack_format), tempfile.TemporaryDirectory() as root:
+                path = Path(root) / "job.gcode"
+                path.write_bytes(NATIVE + b";padding\n" * 1000)
+                progress = []
+                with FakePrinter(ack_format=ack_format) as server:
+                    with self.assertRaisesRegex(protocol.PrinterError, f"Block {block} not acknowledged"):
+                        with protocol.Client("127.0.0.1", threading.Event(), server.port) as client:
+                            client.upload(path, "test.gcode", progress.append)
+                    self.assertNotIn("~M29", server.commands)
+                    self.assertFalse(any(c.startswith(("~M23", "~M24")) for c in server.commands))
+                self.assertNotIn(100, progress)
+
     def test_explicit_start_separate_connection(self):
         with FakePrinter() as server:
             name = protocol.transfer_name("pieds")
@@ -270,6 +357,46 @@ class SendTests(unittest.TestCase):
                 client.start(name)
             self.assertIn("~M23 " + protocol.remote_path(name), server.commands)
             self.assertNotIn("~M24", server.commands)
+
+    def test_confirmed_upload_start_accepts_only_idle_building(self):
+        with FakePrinter(fault="upload-idle") as server:
+            with protocol.Client("127.0.0.1", threading.Event(), server.port, pending_start="test.gcode") as client:
+                client.start("test.gcode")
+            self.assertEqual(sum(c.startswith("~M23 ") for c in server.commands), 1)
+            self.assertEqual(server.commands.count("~M27"), 3)
+            self.assertNotIn("~M24", server.commands)
+        for fault in ("upload-idle", "upload-moving", "upload-progress", "upload-busy-after-control", "busy"):
+            with self.subTest(fault=fault), FakePrinter(fault=fault) as server:
+                with self.assertRaises(protocol.PrinterError):
+                    options = {} if fault == "upload-idle" else {"pending_start": "test.gcode"}
+                    with protocol.Client("127.0.0.1", threading.Event(), server.port, **options) as client:
+                        client.start("test.gcode")
+                self.assertFalse(any(c.startswith("~M23 ") for c in server.commands))
+
+    def test_pending_upload_state_requires_all_controller_evidence(self):
+        status = "MachineStatus: BUILDING\nMoveMode: READY\nStatus: S:1 L:0 J:0 F:0"
+        parsed = protocol.parse_status(status, "", "SD printing byte 0/1000")
+        self.assertTrue(protocol.pending_upload_idle(parsed))
+        for change in (
+            {"state": "PAUSED"}, {"state": "BUILDING_FROM_SD"},
+            {"move_mode": None}, {"move_mode": "MOVING"},
+            {"controller": None}, {"controller": {"S": 1, "L": 0, "J": 1, "F": 0}},
+            {"print_bytes": None}, {"print_bytes": (1, 1000)}, {"print_bytes": (0, 100000)},
+        ):
+            with self.subTest(change=change):
+                self.assertFalse(protocol.pending_upload_idle({**parsed, **change}))
+
+    def test_pending_start_connection_cannot_send_other_jobs_or_heat(self):
+        with FakePrinter(fault="upload-idle") as server:
+            with protocol.Client("127.0.0.1", threading.Event(), server.port, pending_start="test.gcode") as client:
+                for operation in (
+                    lambda: client.start("different.gcode"),
+                    lambda: client.preheat_bed(60),
+                    lambda: client.upload(Path("unused.gcode"), "test.gcode", lambda value: None),
+                ):
+                    with self.assertRaises(protocol.PrinterError):
+                        operation()
+            self.assertFalse(any(c.startswith(("~M23", "~M140", "~M28")) for c in server.commands))
 
     def test_status_is_read_only_with_temperatures_and_progress(self):
         with FakePrinter() as server:

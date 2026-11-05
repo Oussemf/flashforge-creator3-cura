@@ -131,6 +131,44 @@ class NativeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, error):
                     native.convert(raw, dual_settings())
 
+    def test_dual_recovers_switch_retraction_before_xy_after_e_reset(self):
+        for first in (0, 1):
+            with self.subTest(first=first):
+                raw = dual_source(first)[0].replace(
+                    "G1 F1800 E0\nG92 E0", "G1 F1200 E-14.76544\nG92 E0", 1,
+                ).replace(
+                    f"T{first}\nG92 E0\nG0 F3600 Z0.44",
+                    f"T{first}\nG92 E0\nG1 F1200 E14.7\nG0 F600 Z0.44",
+                ).replace(
+                    "Z0.44\nG0 X-5 Y-5\nG1 F1800 E1.3\nG1 F1200 X5 Y5 E2.53456",
+                    "Z0.44\nG0 X-5 Y-5\nG1 F1800 E16\nG1 F1200 X5 Y5 E17.23456",
+                )
+                output = native.convert([raw], dual_settings())[0]
+                self.assertIn(f"M108 T{first}\nM107\nG92 E0\nG1 F1200 E14.7", output)
+                source_e = re.findall(r"^G[01]\b[^\r\n;]*\bE([-+]?[0-9.]+)", raw, re.M)
+                output_e = re.findall(r"^G1\b[^\r\n;]*\bE([-+]?[0-9.]+)", output, re.M)
+                self.assertEqual(source_e, output_e)
+
+    def test_dual_recovery_without_xy_cannot_exceed_own_retraction(self):
+        raw = dual_source()[0].replace(
+            "G1 F1800 E0\nG92 E0", "G1 F1200 E-14.76544\nG92 E0", 1,
+        )
+        return_marker = "T0\nG92 E0\nG0 F3600 Z0.44"
+        for recovery in (
+            "G1 F1200 E16.01",
+            "G1 F1200 E14.7\nG1 E16.01",
+            "G1 F1200 E14.7\nG92 E0\nG1 E1.31",
+            "G1 F1200 X-5 E14.7",
+        ):
+            with self.subTest(recovery=recovery), self.assertRaisesRegex(ValueError, "before XY"):
+                native.convert([raw.replace(return_marker, f"T0\nG92 E0\n{recovery}\nG0 F3600 Z0.44")], dual_settings())
+        first_use = raw.replace("T1\nG92 E0\nM109", "T1\nG92 E0\nG1 F1200 E-16\nG1 E0\nM109")
+        with self.assertRaisesRegex(ValueError, "before XY"):
+            native.convert([first_use], dual_settings())
+        no_debt = dual_source()[0].replace(return_marker, "T0\nG92 E0\nG1 F1200 E14.7\nG0 F3600 Z0.44")
+        with self.assertRaisesRegex(ValueError, "before XY"):
+            native.convert([no_debt], dual_settings())
+
     def test_dual_temperature_and_fan_addressing(self):
         output = native.convert(dual_source(extra="M104 T0 S190\nM104 S218\nM106 P0 S128\nM106 P1 S200\n"), dual_settings())[0]
         self.assertIn("M104 S190 T0\nM104 S218 T1", output)

@@ -317,6 +317,8 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
     used = set()
     extrusion = 0.0
     tool_extrusion = [0.0, 0.0]
+    tool_retracted = [0.0, 0.0]
+    positioned_tools = set()
     reset_required = False
     known_xy = set()
     extent = {"X": 0.0, "Y": 0.0, "Z": 0.0}
@@ -368,12 +370,26 @@ def convert(data: list[str], config: PrintConfig) -> list[str]:
                     raise ValueError("Cura must reset absolute E with G92 after every tool change.")
                 if dual:
                     extrusion = tool_extrusion[active]
-                if params["E"] > extrusion + 0.00001:
+                delta = params["E"] - extrusion
+                if delta > 0.00001:
                     if known_xy != {"X", "Y"}:
-                        raise ValueError("Extrusion before XY positioning")
-                    used.add(active)
+                        # Cura can recover switch retraction before travelling to the prime tower.
+                        recovery = (
+                            dual and active in positioned_tools
+                            and set(params) <= {"E", "F"}
+                            and tool_retracted[active] > 0
+                            and delta <= tool_retracted[active] + 0.00001
+                        )
+                        if not recovery:
+                            raise ValueError("Extrusion before XY positioning")
+                    if not dual or delta > tool_retracted[active] + 0.00001:
+                        used.add(active)
+                if dual:
+                    tool_retracted[active] = max(0.0, tool_retracted[active] - delta)
                 extrusion = params["E"]
                 tool_extrusion[active] = extrusion
+            if dual and known_xy == {"X", "Y"}:
+                positioned_tools.add(active)
         parsed.append((line, op, params))
     if dual:
         if used != {0, 1}:
